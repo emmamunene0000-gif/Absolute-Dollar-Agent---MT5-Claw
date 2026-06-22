@@ -238,6 +238,25 @@ nmom          = input.int(50,    "Negative Below",  group=grpRSI)
 showRSIlabels = input.bool(false,"Show RSI Labels", group=grpRSI)
 filleshow     = input.bool(false,"Show Background", group=grpRSI)
 
+// ── CLAW CONFIDENCE ENGINE ────────────────────────────────────────────────────
+grpClaw          = "🦞 Claw Confidence Engine"
+claw_mode        = input.string("Moderate", "Claw Mode",
+     options=["Conservative","Moderate","Aggressive","Custom"], group=grpClaw,
+     tooltip="Conservative=80%, Moderate=60%, Aggressive=40%. Gates ALL entries — ATM and Smart.")
+custom_threshold = input.int(60, "Custom Threshold %", minval=0, maxval=100, group=grpClaw)
+mtf_weight       = input.float(1.5, "MTF Weight",       minval=0, maxval=3.0, step=0.25, group=grpClaw)
+struct_weight    = input.float(1.0, "Structure Weight", minval=0, maxval=3.0, step=0.25, group=grpClaw)
+rsi_weight       = input.float(1.0, "RSI Weight",       minval=0, maxval=3.0, step=0.25, group=grpClaw)
+vwap_weight      = input.float(1.0, "VWAP Weight",      minval=0, maxval=3.0, step=0.25, group=grpClaw)
+fib_weight       = input.float(0.5, "Fib Weight",       minval=0, maxval=3.0, step=0.25, group=grpClaw)
+vp_weight        = input.float(0.5, "VP Weight",        minval=0, maxval=3.0, step=0.25, group=grpClaw)
+requireFibTrend  = input.bool(false, "Require Fib Trend",  group=grpClaw,
+     tooltip="When ON, Fib trend is weighted into the confidence score.")
+use_m5_confirm   = input.bool(true,  "M5 RSI Confirm",    group=grpClaw,
+     tooltip="Smart signals require M5 RSI to agree with chart-TF RSI.")
+enable_smart_sigs = input.bool(true, "Enable Smart Signals", group=grpClaw,
+     tooltip="RSI-momentum trigger — fires as an entry alongside ATM Bot, both gated by the confidence engine.")
+
 // ── VOLUME PROFILE ────────────────────────────────────────────────────────────
 grpVP         = "📊 Volume Profile"
 vpEnabled     = input.bool(true,       "Enable Volume Profile",                     group=grpVP)
@@ -864,6 +883,172 @@ below_sell      = sellEnabled and below_sell_cross
 sell_signal_raw = sellEnabled and (src_sell < trail_sell) and below_sell
 sell_signal     = sell_signal_raw and barstate.isconfirmed
 
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 7.5 — CLAW CONFIDENCE ENGINE (Transplanted from Agent Protocol Suite)
+// Architecture: TRIGGER → GATE (Trail Direction) → CONFLUENCE % → EXECUTION
+//
+// The MTF Liquidity Trail is TRUTH (direction gate) — not a timing signal.
+// Smart Signals are RSI-momentum triggers alongside ATM Bot.
+// Confidence % must exceed CLAN threshold before any entry fires.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── MTF Liquidity Trail (EMA + ATR — direction truth, not timing) ─────────────
+calcLiqTrail(mlen, alen, amult) =>
+    float t_atr   = ta.atr(alen)
+    float t_ma    = ta.ema(close, mlen)
+    float raw_up  = t_ma - t_atr * amult
+    float raw_dn  = t_ma + t_atr * amult
+    int   t_trend = 1
+    float t_trail = na
+    if barstate.isfirst
+        t_trend := close > t_ma ? 1 : -1
+        t_trail := close > t_ma ? raw_up : raw_dn
+    else
+        int   prev_trend = nz(t_trend[1], 1)
+        float prev_trail = nz(t_trail[1], close)
+        if prev_trend == 1
+            t_trail := math.max(raw_up, prev_trail)
+            t_trend := close < t_trail ? -1 : 1
+            if close < t_trail
+                t_trail := raw_dn
+        else
+            t_trail := math.min(raw_dn, prev_trail)
+            t_trend := close > t_trail ? 1 : -1
+            if close > t_trail
+                t_trail := raw_up
+    [t_trend, t_trail]
+
+[ltf_trend, ltf_trail] = calcLiqTrail(50, 14, 1.25)
+[m15_trend, m15_trail] = request.security(syminfo.tickerid, "15", calcLiqTrail(50, 14, 1.25))
+[h1_trend,  h1_trail]  = request.security(syminfo.tickerid, "60", calcLiqTrail(50, 14, 1.25))
+
+bool trail_allows_long  = ltf_trend == 1
+bool trail_allows_short = ltf_trend == -1
+
+bool mtf_bull_conf    = m15_trend == 1  and h1_trend == 1
+bool mtf_bear_conf    = m15_trend == -1 and h1_trend == -1
+bool mtf_partial_bull = m15_trend == 1  or  h1_trend == 1
+bool mtf_partial_bear = m15_trend == -1 or  h1_trend == -1
+
+// ── Smart Signals — RSI momentum trigger with M5 confirmation ─────────────────
+rsi_m5        = request.security(syminfo.tickerid, "5", ta.rsi(close, rsiLen))
+ema_m5_close  = request.security(syminfo.tickerid, "5", ta.ema(close, 5))
+m5_bull_mom   = ta.change(ema_m5_close) > 0
+m5_bear_mom   = ta.change(ema_m5_close) < 0
+
+// Reuse ema5_close and change_ema5 already computed in Section 6
+smartBull     = rsi > pmom and change_ema5 > 0 and (not use_m5_confirm or (rsi_m5 > pmom and m5_bull_mom))
+smartBear     = rsi < nmom and change_ema5 < 0 and (not use_m5_confirm or (rsi_m5 < nmom and m5_bear_mom))
+newSmartBull  = smartBull and not smartBull[1] and barstate.isconfirmed
+newSmartBear  = smartBear and not smartBear[1] and barstate.isconfirmed
+
+// ── Early Fib Trend (reuses len_fib input; needed before Section 12) ──────────
+claw_fib_basis  = ta.ema(ta.ema(hlc3, len_fib), len_fib)
+var int claw_trend_fib = 0
+claw_trend_fib := claw_fib_basis > claw_fib_basis[1] ? 1 : claw_fib_basis < claw_fib_basis[1] ? -1 : nz(claw_trend_fib[1])
+bool fib_bull_conf = claw_trend_fib == 1
+bool fib_bear_conf = claw_trend_fib == -1
+
+// ── Simplified Structure Bias (pivot-based, for confluence scoring) ────────────
+claw_pivHi = ta.pivothigh(high, 25, 25)
+claw_pivLo = ta.pivotlow(low,   25, 25)
+var float claw_prevHigh   = na
+var float claw_prevLow    = na
+var int   claw_structBias = 0
+if not na(claw_pivHi)
+    claw_structBias := na(claw_prevHigh) or claw_pivHi >= claw_prevHigh ? 1 : -1
+    claw_prevHigh   := claw_pivHi
+if not na(claw_pivLo)
+    if na(claw_prevLow) or claw_pivLo >= claw_prevLow
+        if claw_structBias != -1
+            claw_structBias := 1
+    else
+        claw_structBias := -1
+    claw_prevLow := claw_pivLo
+bool struct_bull_conf = claw_structBias == 1
+bool struct_bear_conf = claw_structBias == -1
+
+// ── VWAP confluence from existing lastSwing ───────────────────────────────────
+bool vwap_bull_conf = lastSwing == 1
+bool vwap_bear_conf = lastSwing == -1
+
+// ── VP confluence (var vp_currentVAL/VAH persist from Section 4) ─────────────
+bool vp_bullish_conf = vpEnabled and not na(vp_currentVAL) and close > vp_currentVAL
+bool vp_bearish_conf = vpEnabled and not na(vp_currentVAH) and close < vp_currentVAH
+
+// ── 6-Factor Weighted Confidence Score ───────────────────────────────────────
+float bull_score = 0.0
+float bull_max   = 0.0
+float bear_score = 0.0
+float bear_max   = 0.0
+
+bull_score += mtf_bull_conf ? mtf_weight : mtf_partial_bull ? mtf_weight * 0.4 : 0.0
+bull_max   += mtf_weight
+bear_score += mtf_bear_conf ? mtf_weight : mtf_partial_bear ? mtf_weight * 0.4 : 0.0
+bear_max   += mtf_weight
+
+bull_score += struct_bull_conf ? struct_weight : 0.0
+bull_max   += struct_weight
+bear_score += struct_bear_conf ? struct_weight : 0.0
+bear_max   += struct_weight
+
+bull_score += positive ? rsi_weight : 0.0
+bull_max   += rsi_weight
+bear_score += negative ? rsi_weight : 0.0
+bear_max   += rsi_weight
+
+bull_score += vwap_bull_conf ? vwap_weight : 0.0
+bull_max   += vwap_weight
+bear_score += vwap_bear_conf ? vwap_weight : 0.0
+bear_max   += vwap_weight
+
+if requireFibTrend
+    bull_score += fib_bull_conf ? fib_weight : 0.0
+    bull_max   += fib_weight
+    bear_score += fib_bear_conf ? fib_weight : 0.0
+    bear_max   += fib_weight
+
+if vpEnabled
+    bull_score += vp_bullish_conf ? vp_weight : 0.0
+    bull_max   += vp_weight
+    bear_score += vp_bearish_conf ? vp_weight : 0.0
+    bear_max   += vp_weight
+
+float bull_conf_pct = bull_max > 0 ? (bull_score / bull_max) * 100.0 : 0.0
+float bear_conf_pct = bear_max > 0 ? (bear_score / bear_max) * 100.0 : 0.0
+
+int conf_threshold = switch claw_mode
+    "Conservative" => 80
+    "Moderate"     => 60
+    "Aggressive"   => 40
+    "Custom"       => custom_threshold
+    => 60
+
+bool bull_conf_pass = bull_conf_pct >= conf_threshold
+bool bear_conf_pass = bear_conf_pct >= conf_threshold
+
+// ── Signal Unification — ATM + Smart, gated by Trail + Confidence ─────────────
+bool trig_ATM_buy    = buy_signal
+bool trig_ATM_sell   = sell_signal
+bool trig_smart_buy  = enable_smart_sigs and newSmartBull
+bool trig_smart_sell = enable_smart_sigs and newSmartBear
+
+bool gated_ATM_buy    = trig_ATM_buy    and trail_allows_long
+bool gated_ATM_sell   = trig_ATM_sell   and trail_allows_short
+bool gated_smart_buy  = trig_smart_buy  and trail_allows_long
+bool gated_smart_sell = trig_smart_sell and trail_allows_short
+
+bool final_ATM_buy    = gated_ATM_buy    and bull_conf_pass
+bool final_ATM_sell   = gated_ATM_sell   and bear_conf_pass
+bool final_smart_buy  = gated_smart_buy  and bull_conf_pass
+bool final_smart_sell = gated_smart_sell and bear_conf_pass
+
+bool claw_buy_signal  = final_ATM_buy  or final_smart_buy
+bool claw_sell_signal = final_ATM_sell or final_smart_sell
+
+bool claw_rejected_long  = (trig_ATM_buy  or trig_smart_buy)  and not claw_buy_signal
+bool claw_rejected_short = (trig_ATM_sell or trig_smart_sell) and not claw_sell_signal
+
 bullishRegime = positive
 bearishRegime = negative
 vwapBullish   = lastSwing ==  1
@@ -871,8 +1056,10 @@ vwapBearish   = lastSwing == -1
 regimeBullish = requireVWAP ? (bullishRegime and vwapBullish) : bullishRegime
 regimeBearish = requireVWAP ? (bearishRegime and vwapBearish) : bearishRegime
 
-buy_signal_filtered  = enableRegimeFilter ? (buy_signal  and regimeBullish) : buy_signal
-sell_signal_filtered = enableRegimeFilter ? (sell_signal and regimeBearish) : sell_signal
+// Claw gate replaces the old regime-only filter when enableRegimeFilter is ON.
+// OFF = raw ATM only (no Claw gating — useful for debugging).
+buy_signal_filtered  = enableRegimeFilter ? claw_buy_signal  : buy_signal
+sell_signal_filtered = enableRegimeFilter ? claw_sell_signal : sell_signal
 
 var int posState = 0
 var bool is_trade_running = false
@@ -968,8 +1155,12 @@ plotshape(master_sync_buy,  title="Master Sync Buy",  style=shape.diamond, locat
 plotshape(master_sync_sell, title="Master Sync Sell", style=shape.diamond, location=location.abovebar, color=color.new(#ff0000,0), textcolor=color.white, size=size.normal, text="SYNC SELL")
 plotshape(buy_sig_vis,   title="ATM Buy",        style=shape.labelup,     location=location.belowbar, color=color.green,           textcolor=color.white, size=size.tiny,   text="Buy")
 plotshape(sell_sig_vis,  title="ATM Sell",       style=shape.labeldown,   location=location.abovebar, color=color.red,             textcolor=color.white, size=size.tiny,   text="Sell")
-plotshape(buy_rejected,  title="Rejected Buy",   style=shape.xcross,      location=location.belowbar, color=color.gray,            size=size.tiny)
-plotshape(sell_rejected, title="Rejected Sell",  style=shape.xcross,      location=location.abovebar, color=color.gray,            size=size.tiny)
+plotshape(buy_rejected,        title="Rejected Buy",   style=shape.xcross,      location=location.belowbar, color=color.gray,                    size=size.tiny)
+plotshape(sell_rejected,       title="Rejected Sell",  style=shape.xcross,      location=location.abovebar, color=color.gray,                    size=size.tiny)
+plotshape(final_smart_buy,     title="Smart Buy",      style=shape.labelup,     location=location.belowbar, color=color.new(color.lime, 0),      textcolor=color.black, size=size.small, text="🧠Buy")
+plotshape(final_smart_sell,    title="Smart Sell",     style=shape.labeldown,   location=location.abovebar, color=color.new(color.red,  0),      textcolor=color.white, size=size.small, text="🧠Sell")
+plotshape(claw_rejected_long,  title="Claw Rejected Long",  style=shape.xcross, location=location.belowbar, color=color.new(color.orange, 20),   size=size.tiny)
+plotshape(claw_rejected_short, title="Claw Rejected Short", style=shape.xcross, location=location.abovebar, color=color.new(color.orange, 20),   size=size.tiny)
 plotshape(sovereign_counter_buy,  title="Counter Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(GOLD,20), textcolor=color.black, size=size.small, text="CT-L")
 plotshape(sovereign_counter_sell, title="Counter Short", style=shape.triangledown, location=location.abovebar, color=color.new(GOLD,20), textcolor=color.black, size=size.small, text="CT-S")
 
