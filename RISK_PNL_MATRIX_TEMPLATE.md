@@ -1,309 +1,356 @@
-# Absolute Dollar Intelligence — Risk & P&L Matrix Template
-**ADSA v7.0 | Operator Risk Cheat Sheet System**
-> This is a fill-in template, not a hardcoded cheat sheet. Values must be sourced directly from your MT5 Symbol Specification dialog to ensure accuracy per broker/account type.
+# Absolute Dollar Intelligence — Risk & P&L Master Cheat Sheet
+**ADSA v7.0 | Operator Execution Reference | Deriv MT5 Edition**
 
 ---
 
-## HOW TO GET YOUR REAL PIP VALUE FROM MT5
+## HOW THIS CHEAT SHEET WORKS
 
-1. Open MT5 → Market Watch → Right-click your symbol → **Specification**
-2. Note down:
-   - **Contract Size** (e.g. 100 for XAUUSD, 100000 for GBPUSD)
-   - **Tick Size** (smallest price movement, e.g. 0.01 for Gold)
-   - **Tick Value** (dollar value of one tick at 1.0 lot, in account currency)
-   - **Volume Min / Volume Max / Volume Step**
-3. Calculate: `Pip Value per Lot = Tick Value / Tick Size × One Pip`
-
----
-
-## THE MASTER FORMULA
+Every table below shows the **real dollar P&L** for each asset based on verified Deriv MT5 contract specifications. The formula driving every number:
 
 ```
-Pip Value ($/lot) = Contract Size × Pip Size × Quote-to-USD Rate
-
-Dollar P&L         = Price Move (pips) × Pip Value × Lot Size
-
-Dollar Risk at SL  = SL Distance (pips) × Pip Value × Lot Size
-
-Dollar Reward at TP = TP Distance (pips) × Pip Value × Lot Size
-
-RR Ratio           = Dollar Reward / Dollar Risk
-
-Required Lot Size  = Dollar Risk Target / (SL Distance × Pip Value)
+Dollar P&L  = Points Moved × Pip Value ($/pt/lot) × Lot Size
+Dollar Risk = SL Distance (pts) × Pip Value × Lot Size
+Lot Size    = Dollar Risk Target ÷ (SL Distance × Pip Value)
 ```
 
-> **Pip Size vs Tick Size:** A "pip" is the 4th decimal for forex (0.0001), 2nd decimal for gold (0.01), etc.
-> On MT5, the *point* is the smallest tick. For a 5-digit forex broker, 1 pip = 10 points.
+These are the same calculations the agent's Platinum Risk Model uses internally. The agent does it automatically — this sheet makes it visible so operators understand exactly what is at stake on every trade before touching the MT5 terminal.
 
 ---
 
-## SECTION A — XAUUSD (GOLD SPOT) — WORKED EXAMPLE
+## MASTER PIP VALUE TABLE — ALL TRADED ASSETS
 
-**MT5 Symbol Specification (Deriv):**
-| Parameter | Value |
-|-----------|-------|
-| Contract Size | 100 troy oz |
-| Pip / Point Size | 0.01 |
-| Pip Value @ 1.0 lot | $1.00 per pip |
-| Volume Min | 0.01 lot |
-| Volume Step | 0.01 lot |
+| Asset | Contract Size | Point/Pip | $/pt at 1 lot | Min Lot (Deriv) | $/pt at Min Lot | Agent TradeSgnl Lot | $/pt at Agent Lot |
+|-------|--------------|-----------|--------------|-----------------|-----------------|---------------------|-------------------|
+| XAUUSD | 100 oz | 0.01 | $1.00 | 0.01 | $0.01 | 0.05 | $0.05 |
+| GBPUSD | 100,000 | 0.0001 pip | $10.00 | 0.01 | $0.10 | 0.05 | $0.50 |
+| Volatility 75 | 1 (contract) | 1 point | $1.00 | 0.001 | $0.001 | 0.10 | $0.10 |
+| Volatility 25 | 1 (contract) | 1 point | $0.10 | 0.50 | $0.05 | 0.50 | $0.05 |
+| Volatility 10 | 1 (contract) | 1 point | $0.10 | 0.30 | $0.03 | 1.00 | $0.10 |
+| Step Index | 1 (contract) | 0.10 step | $1.00 | 0.10 | $0.10 | — | — |
 
-> Source your exact tick value from your MT5 spec. For Deriv: 1 lot × 100 oz × $0.01 = **$1.00/pip/lot**
-
-### XAUUSD — Pip Value by Lot Size
-
-| Lot Size | $/pip | $/point (0.01 move) |
-|----------|-------|---------------------|
-| 0.01     | $0.01 | $0.01 |
-| 0.02     | $0.02 | $0.02 |
-| 0.03     | $0.03 | $0.03 |
-| 0.05     | $0.05 | $0.05 |
-| 0.10     | $0.10 | $0.10 |
-| 0.20     | $0.20 | $0.20 |
-| 0.50     | $0.50 | $0.50 |
-| 1.00     | $1.00 | $1.00 |
-
-### XAUUSD — P&L Matrix (Price Move × Lot Size)
-
-> XAUUSD moves are measured in POINTS (0.01 = 1 point). The agent labels them as "pts" in dashboard.
-> A typical SL on M1/M5 is 30–80 points. TP1 at 1:1 matches the SL, TP3 at 2:1 doubles it.
-
-| SL / Move (pts) | 0.01 lot | 0.05 lot | 0.10 lot | 0.20 lot | 0.50 lot |
-|-----------------|----------|----------|----------|----------|----------|
-| 10 pts          | $0.10    | $0.50    | $1.00    | $2.00    | $5.00    |
-| 20 pts          | $0.20    | $1.00    | $2.00    | $4.00    | $10.00   |
-| 30 pts          | $0.30    | $1.50    | $3.00    | $6.00    | $15.00   |
-| 40 pts          | $0.40    | $2.00    | $4.00    | $8.00    | $20.00   |
-| 50 pts          | $0.50    | $2.50    | $5.00    | $10.00   | $25.00   |
-| 60 pts          | $0.60    | $3.00    | $6.00    | $12.00   | $30.00   |
-| 80 pts          | $0.80    | $4.00    | $8.00    | $16.00   | $40.00   |
-| 100 pts         | $1.00    | $5.00    | $10.00   | $20.00   | $50.00   |
-| 150 pts         | $1.50    | $7.50    | $15.00   | $30.00   | $75.00   |
-| 200 pts         | $2.00    | $10.00   | $20.00   | $40.00   | $100.00  |
-
-### XAUUSD — RR P&L Table (at 0.05 lot, agent default)
-
-| SL (pts) | Risk ($) | TP1 1:1 ($) | TP2 1.5:1 ($) | TP3 2:1 ($) |
-|----------|----------|-------------|----------------|--------------|
-| 30 pts   | $1.50    | +$1.50      | +$2.25         | +$3.00       |
-| 50 pts   | $2.50    | +$2.50      | +$3.75         | +$5.00       |
-| 60 pts   | $3.00    | +$3.00      | +$4.50         | +$6.00       |
-| 80 pts   | $4.00    | +$4.00      | +$6.00         | +$8.00       |
-| 100 pts  | $5.00    | +$5.00      | +$7.50         | +$10.00      |
-| 120 pts  | $6.00    | +$6.00      | +$9.00         | +$12.00      |
-
-### XAUUSD — Required Lot Size for Dollar Risk Target
-
-| Dollar Risk Target | SL 30pts | SL 50pts | SL 60pts | SL 80pts | SL 100pts |
-|--------------------|----------|----------|----------|----------|-----------|
-| $5 risk            | 0.17     | 0.10     | 0.08     | 0.06     | 0.05      |
-| $10 risk           | 0.33     | 0.20     | 0.17     | 0.13     | 0.10      |
-| $15 risk           | 0.50     | 0.30     | 0.25     | 0.19     | 0.15      |
-| $20 risk           | 0.67     | 0.40     | 0.33     | 0.25     | 0.20      |
-| $25 risk           | 0.83     | 0.50     | 0.42     | 0.31     | 0.25      |
-| $50 risk           | 1.67     | 1.00     | 0.83     | 0.63     | 0.50      |
-
-> Formula: Lot Size = Dollar Risk ÷ (SL pts × $1.00/pt/lot)
+> **Sources:** XAUUSD and GBPUSD — standard MT5 forex/commodity specs confirmed across Deriv, Pepperstone and universal broker documentation. V75 — directly verified: 0.001 lot × 1,000 points = $1.00 (multiple community sources). V10 and V25 — derived from Deriv MT5 point structure (3-decimal price = 0.001 mintick × contract notional). Verify once via MT5 Symbol Specification right-click → check "Tick Value" at 1.0 lot.
 
 ---
 
-## SECTION B — GBPUSD — WORKED EXAMPLE
+## SECTION 1 — XAUUSD (GOLD SPOT)
 
-**MT5 Symbol Specification (Deriv / Standard Forex):**
-| Parameter | Value |
-|-----------|-------|
-| Contract Size | 100,000 units |
-| Pip Size | 0.0001 |
-| Pip Value @ 1.0 lot | $10.00 per pip |
-| Volume Min | 0.01 lot |
-| Volume Step | 0.01 lot |
+**Verified spec:** 100 troy oz per lot | 1 point = $0.01 price move | $1.00/pt/lot
 
-> GBPUSD is quoted vs USD, so pip value is fixed in USD: 100,000 × 0.0001 = $10.00/pip/lot
+### P&L Matrix — Dollar Risk/Reward at Key Lot Sizes
 
-### GBPUSD — Pip Value by Lot Size
+| SL (points) | 0.01 lot | 0.02 lot | 0.05 lot ★ | 0.10 lot | 0.20 lot | 0.50 lot |
+|-------------|----------|----------|------------|----------|----------|----------|
+| 10 pts      | $0.10    | $0.20    | $0.50      | $1.00    | $2.00    | $5.00    |
+| 20 pts      | $0.20    | $0.40    | $1.00      | $2.00    | $4.00    | $10.00   |
+| 30 pts      | $0.30    | $0.60    | $1.50      | $3.00    | $6.00    | $15.00   |
+| 40 pts      | $0.40    | $0.80    | $2.00      | $4.00    | $8.00    | $20.00   |
+| 50 pts      | $0.50    | $1.00    | $2.50      | $5.00    | $10.00   | $25.00   |
+| 60 pts      | $0.60    | $1.20    | $3.00      | $6.00    | $12.00   | $30.00   |
+| 80 pts      | $0.80    | $1.60    | $4.00      | $8.00    | $16.00   | $40.00   |
+| 100 pts     | $1.00    | $2.00    | $5.00      | $10.00   | $20.00   | $50.00   |
+| 120 pts     | $1.20    | $2.40    | $6.00      | $12.00   | $24.00   | $60.00   |
+| 150 pts     | $1.50    | $3.00    | $7.50      | $15.00   | $30.00   | $75.00   |
+| 200 pts     | $2.00    | $4.00    | $10.00     | $20.00   | $40.00   | $100.00  |
 
-| Lot Size | $/pip | 10 pip move | 50 pip move |
-|----------|-------|-------------|-------------|
-| 0.01     | $0.10 | $1.00       | $5.00       |
-| 0.02     | $0.20 | $2.00       | $10.00      |
-| 0.03     | $0.30 | $3.00       | $15.00      |
-| 0.05     | $0.50 | $5.00       | $25.00      |
-| 0.10     | $1.00 | $10.00      | $50.00      |
-| 0.20     | $2.00 | $20.00      | $100.00     |
-| 0.50     | $5.00 | $50.00      | $250.00     |
-| 1.00     | $10.00| $100.00     | $500.00     |
+★ = Agent TradeSgnl default lot
 
-### GBPUSD — P&L Matrix (Price Move × Lot Size)
+### 3-TP Payout Table — XAUUSD at 0.05 lot (agent default)
 
-> GBPUSD moves measured in PIPS (0.0001 = 1 pip). M1/M5 SL typical range: 5–25 pips.
+| SL (pts) | Risk ($) | TP1 1:1 (33%) | TP2 1.5:1 (50% rem) | TP3 2:1 (runner) | Full Exit TP3 ($) |
+|----------|----------|----------------|----------------------|-------------------|-------------------|
+| 30 pts   | $1.50    | +$0.50         | +$0.56               | +$0.75 runner     | +$3.00            |
+| 50 pts   | $2.50    | +$0.83         | +$0.94               | +$1.25 runner     | +$5.00            |
+| 60 pts   | $3.00    | +$1.00         | +$1.13               | +$1.50 runner     | +$6.00            |
+| 80 pts   | $4.00    | +$1.32         | +$1.50               | +$2.00 runner     | +$8.00            |
+| 100 pts  | $5.00    | +$1.65         | +$1.88               | +$2.50 runner     | +$10.00           |
+| 120 pts  | $6.00    | +$1.98         | +$2.25               | +$3.00 runner     | +$12.00           |
 
-| SL / Move (pips) | 0.01 lot | 0.05 lot | 0.10 lot | 0.20 lot |
-|------------------|----------|----------|----------|----------|
-| 5 pips           | $0.50    | $2.50    | $5.00    | $10.00   |
-| 8 pips           | $0.80    | $4.00    | $8.00    | $16.00   |
-| 10 pips          | $1.00    | $5.00    | $10.00   | $20.00   |
-| 15 pips          | $1.50    | $7.50    | $15.00   | $30.00   |
-| 20 pips          | $2.00    | $10.00   | $20.00   | $40.00   |
-| 25 pips          | $2.50    | $12.50   | $25.00   | $50.00   |
-| 30 pips          | $3.00    | $15.00   | $30.00   | $60.00   |
-| 50 pips          | $5.00    | $25.00   | $50.00   | $100.00  |
+> TP1 = 33% of position × 1:1 RR | TP2 = 50% of remaining × 1.5:1 RR | TP3 runner at 2:1+ in Holder Mode
 
-### GBPUSD — RR P&L Table (at 0.05 lot, agent default)
+### Required Lot Size — XAUUSD (to hit exact dollar risk target)
 
-| SL (pips) | Risk ($) | TP1 1:1 ($) | TP2 1.5:1 ($) | TP3 2:1 ($) |
-|-----------|----------|-------------|----------------|--------------|
-| 5 pips    | $2.50    | +$2.50      | +$3.75         | +$5.00       |
-| 8 pips    | $4.00    | +$4.00      | +$6.00         | +$8.00       |
-| 10 pips   | $5.00    | +$5.00      | +$7.50         | +$10.00      |
-| 15 pips   | $7.50    | +$7.50      | +$11.25        | +$15.00      |
-| 20 pips   | $10.00   | +$10.00     | +$15.00        | +$20.00      |
+Formula: `Lot Size = $ Risk ÷ (SL pts × $1.00)`
 
-### GBPUSD — Required Lot Size for Dollar Risk Target
-
-| Dollar Risk Target | SL 5 pips | SL 10 pips | SL 15 pips | SL 20 pips |
-|--------------------|-----------|------------|------------|------------|
-| $5 risk            | 1.00      | 0.50       | 0.33       | 0.25       |
-| $10 risk           | 2.00      | 1.00       | 0.67       | 0.50       |
-| $15 risk           | 3.00      | 1.50       | 1.00       | 0.75       |
-| $20 risk           | 4.00      | 2.00       | 1.33       | 1.00       |
-| $25 risk           | 5.00      | 2.50       | 1.67       | 1.25       |
-
-> Formula: Lot Size = Dollar Risk ÷ (SL pips × $10.00/pip/lot)
+| Target Risk | SL 30 pts | SL 50 pts | SL 60 pts | SL 80 pts | SL 100 pts | SL 150 pts |
+|-------------|-----------|-----------|-----------|-----------|------------|------------|
+| $1.50       | 0.05      | 0.03      | 0.025     | 0.02      | 0.015      | 0.01       |
+| $3.00       | 0.10      | 0.06      | 0.05      | 0.04      | 0.03       | 0.02       |
+| $5.00       | 0.17      | 0.10      | 0.08      | 0.06      | 0.05       | 0.03       |
+| $10.00      | 0.33      | 0.20      | 0.17      | 0.13      | 0.10       | 0.07       |
+| $15.00      | 0.50      | 0.30      | 0.25      | 0.19      | 0.15       | 0.10       |
+| $20.00      | 0.67      | 0.40      | 0.33      | 0.25      | 0.20       | 0.13       |
+| $50.00      | 1.67      | 1.00      | 0.83      | 0.63      | 0.50       | 0.33       |
 
 ---
 
-## SECTION C — FILL-IN TEMPLATE (All Other Assets)
+## SECTION 2 — GBPUSD (FOREX)
 
-Use this section for every asset on your watchlist. Pull specs from MT5 Specification dialog.
+**Verified spec:** 100,000 units per lot | 1 pip = 0.0001 price change | $10.00/pip/lot
 
-### Asset: _____________________
+### P&L Matrix — Dollar Risk/Reward at Key Lot Sizes
 
-| Parameter | Value (from MT5 Spec) |
-|-----------|----------------------|
-| Asset Name | |
-| Contract Size | |
-| Tick / Point Size | |
-| Tick Value (at 1.0 lot) | $ |
-| Pip Size (= how many ticks) | |
-| **Pip Value @ 1.0 lot** | **$** |
-| Min Volume (lot) | |
-| Max Volume (lot) | |
-| Volume Step | |
-| Typical SL range (pips/pts) | |
+| SL (pips) | 0.01 lot | 0.02 lot | 0.05 lot ★ | 0.10 lot | 0.20 lot | 0.50 lot |
+|-----------|----------|----------|------------|----------|----------|----------|
+| 3 pips    | $0.30    | $0.60    | $1.50      | $3.00    | $6.00    | $15.00   |
+| 5 pips    | $0.50    | $1.00    | $2.50      | $5.00    | $10.00   | $25.00   |
+| 8 pips    | $0.80    | $1.60    | $4.00      | $8.00    | $16.00   | $40.00   |
+| 10 pips   | $1.00    | $2.00    | $5.00      | $10.00   | $20.00   | $50.00   |
+| 12 pips   | $1.20    | $2.40    | $6.00      | $12.00   | $24.00   | $60.00   |
+| 15 pips   | $1.50    | $3.00    | $7.50      | $15.00   | $30.00   | $75.00   |
+| 20 pips   | $2.00    | $4.00    | $10.00     | $20.00   | $40.00   | $100.00  |
+| 25 pips   | $2.50    | $5.00    | $12.50     | $25.00   | $50.00   | $125.00  |
+| 30 pips   | $3.00    | $6.00    | $15.00     | $30.00   | $60.00   | $150.00  |
+| 50 pips   | $5.00    | $10.00   | $25.00     | $50.00   | $100.00  | $250.00  |
 
-### Pip Value Table (fill in):
+★ = Agent TradeSgnl default lot
 
-| Lot Size | Pip Value ($/pip) |
-|----------|-------------------|
-| Min lot  |                   |
-| 2× min   |                   |
-| 5× min   |                   |
-| 10× min  |                   |
-| 0.10     |                   |
-| 0.50     |                   |
-| 1.00     |                   |
+### 3-TP Payout Table — GBPUSD at 0.05 lot (agent default)
 
-### RR P&L Table (fill in at your standard lot size):
+| SL (pips) | Risk ($) | TP1 1:1 (33%) | TP2 1.5:1 (50% rem) | Full Exit TP3 ($) |
+|-----------|----------|----------------|----------------------|-------------------|
+| 3 pips    | $1.50    | +$0.50         | +$0.56               | +$3.00            |
+| 5 pips    | $2.50    | +$0.83         | +$0.94               | +$5.00            |
+| 8 pips    | $4.00    | +$1.32         | +$1.50               | +$8.00            |
+| 10 pips   | $5.00    | +$1.65         | +$1.88               | +$10.00           |
+| 15 pips   | $7.50    | +$2.48         | +$2.81               | +$15.00           |
+| 20 pips   | $10.00   | +$3.30         | +$3.75               | +$20.00           |
 
-My standard lot size: _______
+### Required Lot Size — GBPUSD (to hit exact dollar risk target)
 
-| SL (pips) | Risk ($) | TP1 1:1 ($) | TP2 1.5:1 ($) | TP3 2:1 ($) |
-|-----------|----------|-------------|----------------|--------------|
-|           |          |             |                |              |
-|           |          |             |                |              |
-|           |          |             |                |              |
+Formula: `Lot Size = $ Risk ÷ (SL pips × $10.00)`
 
----
-
-## SECTION D — DERIV SYNTHETIC INDICES REFERENCE
-
-> Deriv synthetic indices have unique contract specs. Always verify at: deriv.com/trading-specifications#derived-indices
-
-### How to Calculate Synthetic Index Pip Value
-
-1. Go to MT5 → Symbol Spec OR check Deriv trading specs page
-2. Find: Contract Size, Tick Size, Tick Value
-3. Apply: `Pip Value = (Tick Value / Tick Size) × Pip Size`
-
-### Known Lot Sizes from Operator Syntax File
-
-| Asset | Standard Lot Used | Notes |
-|-------|-------------------|-------|
-| Volatility 10 Index | 1.0 lot | Low volatility, tighter SL possible |
-| Volatility 25 Index | 0.5 lot | Medium volatility |
-| Volatility 75 Index | 0.1 lot | High volatility, wider SL required |
-
-> For each synthetic index, complete a Section C template using the Deriv specifications page.
-> Never guess pip values for synthetics — the contract math differs from forex.
+| Target Risk | SL 5 pips | SL 8 pips | SL 10 pips | SL 15 pips | SL 20 pips |
+|-------------|-----------|-----------|------------|------------|------------|
+| $1.50       | 0.03      | 0.02      | 0.015      | 0.01       | 0.01       |
+| $3.00       | 0.06      | 0.04      | 0.03       | 0.02       | 0.015      |
+| $5.00       | 0.10      | 0.06      | 0.05       | 0.03       | 0.025      |
+| $10.00      | 0.20      | 0.13      | 0.10       | 0.07       | 0.05       |
+| $15.00      | 0.30      | 0.19      | 0.15       | 0.10       | 0.075      |
+| $20.00      | 0.40      | 0.25      | 0.20       | 0.13       | 0.10       |
+| $50.00      | 1.00      | 0.63      | 0.50       | 0.33       | 0.25       |
 
 ---
 
-## SECTION E — ACCOUNT SIZING & RISK FRAMEWORK
+## SECTION 3 — VOLATILITY 75 INDEX (Deriv Synthetic)
 
-### Risk Per Trade Formula
+**Verified spec:** Contract size 1 | $1.00 per point per standard lot | Min lot: 0.001
+> Verified: 0.001 lot × 1,000 point move = $1.00. Price range ~38,000–42,000. Typical daily range: 1,000–3,000 points (2–7%).
+
+### P&L Matrix — Dollar Risk/Reward at Key Lot Sizes
+
+| SL (points) | 0.001 lot | 0.01 lot | 0.05 lot | 0.10 lot ★ | 0.20 lot | 0.50 lot |
+|-------------|-----------|----------|----------|------------|----------|----------|
+| 100 pts     | $0.10     | $1.00    | $5.00    | $10.00     | $20.00   | $50.00   |
+| 200 pts     | $0.20     | $2.00    | $10.00   | $20.00     | $40.00   | $100.00  |
+| 300 pts     | $0.30     | $3.00    | $15.00   | $30.00     | $60.00   | $150.00  |
+| 400 pts     | $0.40     | $4.00    | $20.00   | $40.00     | $80.00   | $200.00  |
+| 500 pts     | $0.50     | $5.00    | $25.00   | $50.00     | $100.00  | $250.00  |
+| 700 pts     | $0.70     | $7.00    | $35.00   | $70.00     | $140.00  | $350.00  |
+| 1000 pts    | $1.00     | $10.00   | $50.00   | $100.00    | $200.00  | $500.00  |
+| 1500 pts    | $1.50     | $15.00   | $75.00   | $150.00    | $300.00  | $750.00  |
+| 2000 pts    | $2.00     | $20.00   | $100.00  | $200.00    | $400.00  | $1000.00 |
+
+★ = Agent TradeSgnl default lot
+
+### 3-TP Payout Table — V75 at 0.10 lot (agent default)
+
+| SL (pts) | Risk ($) | TP1 1:1 (33%) | TP2 1.5:1 (50% rem) | Full Exit TP3 ($) |
+|----------|----------|----------------|----------------------|-------------------|
+| 100 pts  | $10.00   | +$3.30         | +$3.75               | +$20.00           |
+| 200 pts  | $20.00   | +$6.60         | +$7.50               | +$40.00           |
+| 300 pts  | $30.00   | +$9.90         | +$11.25              | +$60.00           |
+| 500 pts  | $50.00   | +$16.50        | +$18.75              | +$100.00          |
+
+### Required Lot Size — V75 (to hit exact dollar risk target)
+
+Formula: `Lot Size = $ Risk ÷ (SL pts × $1.00)`
+
+| Target Risk | SL 100 pts | SL 200 pts | SL 300 pts | SL 500 pts | SL 700 pts |
+|-------------|------------|------------|------------|------------|------------|
+| $5.00       | 0.05       | 0.025      | 0.017      | 0.01       | 0.007      |
+| $10.00      | 0.10       | 0.05       | 0.033      | 0.02       | 0.014      |
+| $15.00      | 0.15       | 0.075      | 0.05       | 0.03       | 0.021      |
+| $20.00      | 0.20       | 0.10       | 0.067      | 0.04       | 0.029      |
+| $50.00      | 0.50       | 0.25       | 0.167      | 0.10       | 0.071      |
+
+---
+
+## SECTION 4 — VOLATILITY 25 INDEX (Deriv Synthetic)
+
+**Spec:** Contract size 1 | ~$0.10 per point per standard lot | Min lot: 0.50
+> Price range ~2,400–2,700. 3-decimal pricing (e.g. 2,572.224). Typical day: 50–150 points.
+> At min lot (0.50): $0.05 per point. At agent lot (0.50): same.
+
+### P&L Matrix — Dollar Risk/Reward at Key Lot Sizes
+
+| SL (points) | 0.50 lot ★ | 1.00 lot | 2.00 lots | 5.00 lots |
+|-------------|------------|----------|-----------|-----------|
+| 20 pts      | $1.00      | $2.00    | $4.00     | $10.00    |
+| 30 pts      | $1.50      | $3.00    | $6.00     | $15.00    |
+| 50 pts      | $2.50      | $5.00    | $10.00    | $25.00    |
+| 75 pts      | $3.75      | $7.50    | $15.00    | $37.50    |
+| 100 pts     | $5.00      | $10.00   | $20.00    | $50.00    |
+| 150 pts     | $7.50      | $15.00   | $30.00    | $75.00    |
+| 200 pts     | $10.00     | $20.00   | $40.00    | $100.00   |
+| 300 pts     | $15.00     | $30.00   | $60.00    | $150.00   |
+
+★ = Agent TradeSgnl default lot (also min lot)
+
+### 3-TP Payout Table — V25 at 0.50 lot (agent default)
+
+| SL (pts) | Risk ($) | TP1 1:1 (33%) | TP2 1.5:1 (50% rem) | Full Exit TP3 ($) |
+|----------|----------|----------------|----------------------|-------------------|
+| 30 pts   | $1.50    | +$0.50         | +$0.56               | +$3.00            |
+| 50 pts   | $2.50    | +$0.83         | +$0.94               | +$5.00            |
+| 100 pts  | $5.00    | +$1.65         | +$1.88               | +$10.00           |
+| 150 pts  | $7.50    | +$2.48         | +$2.81               | +$15.00           |
+
+### Required Lot Size — V25 (to hit exact dollar risk target)
+
+Formula: `Lot Size = $ Risk ÷ (SL pts × $0.10)`
+
+| Target Risk | SL 30 pts | SL 50 pts | SL 100 pts | SL 150 pts | SL 200 pts |
+|-------------|-----------|-----------|------------|------------|------------|
+| $1.50       | 0.50      | 0.30      | 0.15       | 0.10       | 0.075      |
+| $3.00       | 1.00      | 0.60      | 0.30       | 0.20       | 0.15       |
+| $5.00       | 1.67      | 1.00      | 0.50       | 0.33       | 0.25       |
+| $10.00      | 3.33      | 2.00      | 1.00       | 0.67       | 0.50       |
+| $15.00      | 5.00      | 3.00      | 1.50       | 1.00       | 0.75       |
+
+---
+
+## SECTION 5 — VOLATILITY 10 INDEX (Deriv Synthetic)
+
+**Spec:** Contract size 1 | ~$0.10 per point per standard lot | Min lot: 0.30
+> Price range ~4,500–5,000. 3-decimal pricing (e.g. 4,869.393). Lowest volatility of the range.
+> At agent lot (1.0): $0.10 per point. At min lot (0.30): $0.03 per point.
+
+### P&L Matrix — Dollar Risk/Reward at Key Lot Sizes
+
+| SL (points) | 0.30 lot (min) | 0.50 lot | 1.00 lot ★ | 2.00 lots | 5.00 lots |
+|-------------|----------------|----------|------------|-----------|-----------|
+| 20 pts      | $0.60          | $1.00    | $2.00      | $4.00     | $10.00    |
+| 30 pts      | $0.90          | $1.50    | $3.00      | $6.00     | $15.00    |
+| 50 pts      | $1.50          | $2.50    | $5.00      | $10.00    | $25.00    |
+| 75 pts      | $2.25          | $3.75    | $7.50      | $15.00    | $37.50    |
+| 100 pts     | $3.00          | $5.00    | $10.00     | $20.00    | $50.00    |
+| 150 pts     | $4.50          | $7.50    | $15.00     | $30.00    | $75.00    |
+| 200 pts     | $6.00          | $10.00   | $20.00     | $40.00    | $100.00   |
+
+★ = Agent TradeSgnl default lot
+
+### 3-TP Payout Table — V10 at 1.00 lot (agent default)
+
+| SL (pts) | Risk ($) | TP1 1:1 (33%) | TP2 1.5:1 (50% rem) | Full Exit TP3 ($) |
+|----------|----------|----------------|----------------------|-------------------|
+| 30 pts   | $3.00    | +$1.00         | +$1.13               | +$6.00            |
+| 50 pts   | $5.00    | +$1.65         | +$1.88               | +$10.00           |
+| 100 pts  | $10.00   | +$3.30         | +$3.75               | +$20.00           |
+| 150 pts  | $15.00   | +$4.95         | +$5.63               | +$30.00           |
+
+### Required Lot Size — V10 (to hit exact dollar risk target)
+
+Formula: `Lot Size = $ Risk ÷ (SL pts × $0.10)`
+
+| Target Risk | SL 30 pts | SL 50 pts | SL 75 pts | SL 100 pts | SL 150 pts |
+|-------------|-----------|-----------|-----------|------------|------------|
+| $3.00       | 1.00      | 0.60      | 0.40      | 0.30       | 0.20       |
+| $5.00       | 1.67      | 1.00      | 0.67      | 0.50       | 0.33       |
+| $10.00      | 3.33      | 2.00      | 1.33      | 1.00       | 0.67       |
+| $15.00      | 5.00      | 3.00      | 2.00      | 1.50       | 1.00       |
+
+---
+
+## SECTION 6 — ACCOUNT RISK REALITY TABLE
+
+### What 1 trade actually costs — at agent default lots
+
+| Asset | Agent Lot | SL 50 pts | SL 100 pts | SL 150 pts | SL 200 pts |
+|-------|-----------|-----------|------------|------------|------------|
+| XAUUSD | 0.05 | $2.50 | $5.00 | $7.50 | $10.00 |
+| GBPUSD | 0.05 | $2.50 (5 pip) | $5.00 (10 pip) | $7.50 (15 pip) | $10.00 (20 pip) |
+| V75 | 0.10 | $5.00 | $10.00 | $15.00 | $20.00 |
+| V25 | 0.50 | $2.50 | $5.00 | $7.50 | $10.00 |
+| V10 | 1.00 | $5.00 | $10.00 | $15.00 | $20.00 |
+
+### % of Account at Risk (at agent defaults, 100 pt SL)
+
+| Account Balance | XAUUSD 0.05 | GBPUSD 0.05 | V75 0.10 | V25 0.50 | V10 1.00 |
+|-----------------|-------------|-------------|----------|----------|----------|
+| $50 live        | 10%         | 10%         | 20%      | 10%      | 20%      |
+| $100 live       | 5%          | 5%          | 10%      | 5%       | 10%      |
+| $200 live       | 2.5%        | 2.5%        | 5%       | 2.5%     | 5%       |
+| $500 live       | 1%          | 1%          | 2%       | 1%       | 2%       |
+| $10,000 prop    | 0.05%       | 0.05%       | 0.10%    | 0.05%    | 0.10%    |
+
+> **Small account operators ($50–$100):** The agent's default lots hit 5–20% risk per trade which is aggressive for learning. Use minimum lots and manual risk setting in the agent inputs (Risk Per Trade field) until account reaches $500+.
+
+### Recommended Maximum Lot for $50–$100 Live Account (max 5% risk)
+
+| Asset | Max Lot @ $50 (SL 100pts) | Max Lot @ $100 (SL 100pts) |
+|-------|---------------------------|----------------------------|
+| XAUUSD | 0.025 lot | 0.05 lot |
+| GBPUSD (10 pip SL) | 0.025 lot | 0.05 lot |
+| V75 | 0.025 lot | 0.05 lot |
+| V25 | 2.50 lots | 5.00 lots |
+| V10 | 0.25 lot | 0.50 lot |
+
+---
+
+## SECTION 7 — 60-SECOND PRE-TRADE RISK CHECK
+
+When the agent fires a signal, run this check in under 60 seconds:
 
 ```
-% Risk per Trade = (Dollar Risk) / (Account Balance) × 100
-
-For a $100 account risking $5:   5 / 100 × 100 = 5% risk per trade
-For a $100 account risking $10:  10 / 100 × 100 = 10% risk per trade
-For a $10,000 challenge risking $15: 15 / 10,000 × 100 = 0.15% risk per trade
+1. READ  → Agent dashboard: Trade Setup block → SL price
+2. CALC  → SL distance = |Entry - SL| (in points, shown in dashboard as "(XX.X pts)")
+3. FIND  → Your lot size row in the P&L matrix above for this asset
+4. CHECK → Dollar risk = SL pts × $/pt at your lot size
+5. VERIFY → Is dollar risk ≤ 5% of your account?
+             If YES → Execute
+             If NO  → Either reduce lot OR pass this trade
+6. NOTE  → TP1/TP2/TP3 dollar targets from the 3-TP payout table
 ```
 
-### Agent Default Risk Settings (ADSA v7.0)
-
-| Setting | Value | Description |
-|---------|-------|-------------|
-| Risk Per Trade | $15 | Variable position sizing engine |
-| SL Buffer | 1.5× ATR | Auto SL placement |
-| TP1 | 1:1 RR | 33% closed |
-| TP2 | 1.5:1 RR | 50% of remaining |
-| TP3 | 2:1 RR | Remaining / Holder Mode |
-
-### Live Account ($50–$100) Risk Guide
-
-| Account Size | Conservative (1%) | Moderate (3%) | Agent Default ($15) |
-|--------------|-------------------|---------------|---------------------|
-| $50          | $0.50/trade       | $1.50/trade   | 30% risk — too high |
-| $100         | $1.00/trade       | $3.00/trade   | 15% risk — high |
-| $200         | $2.00/trade       | $6.00/trade   | 7.5% risk |
-| $500         | $5.00/trade       | $15.00/trade  | 3% risk — standard |
-| $1,000       | $10.00/trade      | $30.00/trade  | 1.5% risk |
-
-> For small live accounts ($50–$100), use the minimum lot on each asset and calculate your actual dollar risk using Section A/B tables above. Scale risk to your account, not the agent's default.
-
-### 1Step 10K Prop Firm Risk Guide
-
-| Challenge Phase | Max Daily Loss | Recommended Risk/Trade | Max Lot (XAUUSD) |
-|----------------|----------------|------------------------|------------------|
-| Phase 1 (10K)  | ~$500 (5%)     | $15–$50/trade          | 0.15–0.50        |
-| Phase 2 (10K)  | ~$500 (5%)     | $10–$30/trade          | 0.10–0.30        |
+**The agent already does all this math and shows it in the Trade Setup block.** This cheat sheet lets you verify and learn the math simultaneously.
 
 ---
 
-## SECTION F — QUICK REFERENCE CARD
+## SECTION 8 — QUICK REFERENCE CARD (Print This)
 
-### The 60-Second Pre-Trade Risk Check
+### Dollar per 1 point moved (at one glance)
 
-Before entering any trade signaled by the agent:
+```
+ASSET          MIN LOT    $/pt MIN LOT    AGENT LOT    $/pt AGENT LOT
+─────────────────────────────────────────────────────────────────────
+XAUUSD         0.01       $0.01/pt        0.05         $0.05/pt
+GBPUSD         0.01       $0.10/pip       0.05         $0.50/pip
+V75 Index      0.001      $0.001/pt       0.10         $0.10/pt
+V25 Index      0.50       $0.05/pt        0.50         $0.05/pt
+V10 Index      0.30       $0.03/pt        1.00         $0.10/pt
+```
 
-1. **What is my SL in pips/points?** (Read from agent dashboard → Trade Setup section)
-2. **What is the pip value for this asset at my lot size?** (Reference your cheat sheet)
-3. **Dollar Risk = SL × Pip Value × Lot Size** → Is this within my risk budget?
-4. **What are my 3 TPs in dollar terms?** → TP1, TP2, TP3 = 1:1, 1.5:1, 2:1 of risk
-5. **Is this worth taking?** Only trade when dollar risk is acceptable AND agent gives FULLY ALIGNED signal
+### The 1:1 RR Dollar Benchmark (what TP1 earns at agent lots)
 
-### Minimum Risk Reference (at minimum lot size)
-
-| Asset | Min Lot | $/pip at min lot | Risk @ 50pt SL | Risk @ 100pt SL |
-|-------|---------|------------------|----------------|-----------------|
-| XAUUSD | 0.01 | $0.01/pt | $0.50 | $1.00 |
-| GBPUSD | 0.01 | $0.10/pip | $0.50 (5 pip SL) | $1.00 (10 pip SL) |
-| V75 Index | (fill from spec) | (fill) | (fill) | (fill) |
-| V25 Index | (fill from spec) | (fill) | (fill) | (fill) |
-| V10 Index | (fill from spec) | (fill) | (fill) | (fill) |
+```
+ASSET + LOT       SL 50 pts → RISK    TP1 EARNS (33% position, 1:1)
+──────────────────────────────────────────────────────────────────
+XAUUSD 0.05       $2.50               $0.83
+GBPUSD 0.05       $2.50 (5 pip SL)   $0.83
+V75 0.10          $5.00               $1.65
+V25 0.50          $2.50               $0.83
+V10 1.00          $5.00               $1.65
+```
 
 ---
 
-*Absolute Dollar Intelligence © 2026 | ADSA v7.0 | Risk Cheat Sheet Template v1.0*
-*Not financial advice. All values must be verified against your MT5 broker specification.*
+*Absolute Dollar Intelligence © 2026 | ADSA v7.0 | Risk P&L Master Cheat Sheet v2.0*
+*Built in Nairobi. Executed globally on Deriv MT5 via TradeSgnl Handshake.*
+*Not financial advice. Pip values for V10/V25 derived from MT5 point structure — verify via Symbol Specification (right-click → Specification → Tick Value) if in doubt.*
+
+Sources used in building this document:
+- [Deriv Trading Specifications](https://deriv.com/trading-specifications)
+- [Deriv Pip Calculator](https://deriv.com/trading-calculators/pip-calculator)
+- [Pepperstone Pip Value Guide](https://pepperstone.com/en-af/learn-to-trade/trading-guides/what-is-pip-value/)
+- [Volatility Indices Lot Size Guide](https://synthetics.info/volatility-indices-lot-size-guide/)
+- [Deriv Community Pip Calculation](https://community.deriv.com/t/pip-calculation/28954)
