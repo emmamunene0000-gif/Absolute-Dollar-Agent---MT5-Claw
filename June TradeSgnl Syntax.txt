@@ -1,0 +1,39 @@
+LICENSE_ID,{{ticker}},buy,vol_dollar={{risk}},sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=
+LICENSE_ID,{{ticker}},closebuy,comment=
+
+
+
+LICENSE_ID,{{ticker}},sell,vol_dollar={{risk}},sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=
+LICENSE_ID,{{ticker}},closesell,comment=
+
+
+
+6678632939770,XAUUSD,buy,vol_lots=0.05,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=XAUUSD Agent
+6678632939770,XAUUSD,closebuy,comment=XAUUSD Agent🟢
+
+6678632939770,XAUUSD,sell,vol_lots=0.05,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=XAUUSD Agent
+6678632939770,XAUUSD,closesell,comment=XAUUSD Agent🟢
+
+6678632939770,GBPUSD,buy,vol_lots=0.05,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=GBPUSD Agent
+6678632939770,GBPUSD,closebuy,comment=GBPUSD Agent🟢
+
+6678632939770,GBPUSD,sell,vol_lots=0.05,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=GBPUSD Agent
+6678632939770,GBPUSD,closesell,comment=GBPUSD Agent🟢
+
+6678632939770,Volatility 10 Index,buy,vol_lots=1,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 10 Agent
+6678632939770,Volatility 10 Index,closebuy,comment=Volatility 10 Agent🟢
+
+6678632939770,Volatility 10 Index,sell,vol_lots=1,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 10 Agent
+6678632939770,Volatility 10 Index,closesell,comment=Volatility 10 Agent🟢
+
+6678632939770,Volatility 25 Index,buy,vol_lots=0.5,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 25 Agent
+6678632939770,Volatility 25 Index,closebuy,comment=Volatility 25 Agent🟢
+
+6678632939770,Volatility 25 Index,sell,vol_lots=0.5,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 25 Agent
+6678632939770,Volatility 25 Index,closesell,comment=Volatility 25 Agent🟢
+
+6678632939770,Volatility 75 Index,buy,vol_lots=0.1,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 75 Agent
+6678632939770,Volatility 75 Index,closebuy,comment=Volatility 75 Agent
+
+6678632939770,Volatility 75 Index,sell,vol_lots=0.1,sl_price={{sl}},tp1_price={{tp1}},pct1=0.33,tp2_price={{tp2}},pct2=0.50,tp3_price={{tp3}},exent=1,comment=Volatility 75 Agent
+6678632939770,Volatility 75 Index,closesell,comment=Volatility 75 Agent
