@@ -1,63 +1,60 @@
 //+------------------------------------------------------------------+
 //| AgentProtocol_LiquiditySuite.mq5                                |
-//| THE AGENT PROTOCOL — LIQUIDITY SUITE v1.0 (MQL5 Port)          |
-//| Phase 1: Bar-for-bar signal parity with Pine Script v6          |
+//| THE AGENT PROTOCOL — LIQUIDITY SUITE v1.1 (MQL5 Port)          |
+//| Phase 1: Visual + signal parity with Pine Script v6             |
 //| Architecture: TRIGGER → GATE → CONFLUENCE → CONFIDENCE → EXEC   |
 //+------------------------------------------------------------------+
 #property copyright "Absolute Dollar Intelligence"
-#property version   "1.00"
+#property version   "1.10"
 #property indicator_chart_window
 #property indicator_buffers 10
 #property indicator_plots   8
 
-// Plot 0: Trail line
-#property indicator_label1  "Trail"
+// Plot 0: Bull Trail (green — trail when trend is up)
+#property indicator_label1  "Bull Trail"
 #property indicator_type1   DRAW_LINE
 #property indicator_color1  clrLime
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-// Plot 1: ATM Buy  (⚡Buy)
-#property indicator_label2  "ATM Buy"
-#property indicator_type2   DRAW_ARROW
-#property indicator_color2  clrLime
+// Plot 1: Bear Trail (red — trail when trend is down)
+#property indicator_label2  "Bear Trail"
+#property indicator_type2   DRAW_LINE
+#property indicator_color2  clrRed
+#property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
-// Plot 2: ATM Sell (⚡Sell)
-#property indicator_label3  "ATM Sell"
+// Plot 2: ATM Buy (⚡Buy) — filled up triangle, lime
+#property indicator_label3  "ATM Buy"
 #property indicator_type3   DRAW_ARROW
-#property indicator_color3  clrRed
-#property indicator_width3  2
+#property indicator_color3  clrLime
+#property indicator_width3  3
 
-// Plot 3: Smart Buy  (🧠Buy)
-#property indicator_label4  "Smart Buy"
+// Plot 3: ATM Sell (⚡Sell) — filled down triangle, red
+#property indicator_label4  "ATM Sell"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrLime
-#property indicator_width4  1
+#property indicator_color4  clrRed
+#property indicator_width4  3
 
-// Plot 4: Smart Sell (🧠Sell)
-#property indicator_label5  "Smart Sell"
+// Plot 4: Smart Buy (🧠Buy) — smaller, aqua
+#property indicator_label5  "Smart Buy"
 #property indicator_type5   DRAW_ARROW
-#property indicator_color5  clrRed
-#property indicator_width5  1
+#property indicator_color5  clrAqua
+#property indicator_width5  2
 
-// Plot 5: Rejected Long
-#property indicator_label6  "Rejected Long"
+// Plot 5: Smart Sell (🧠Sell) — smaller, orange
+#property indicator_label6  "Smart Sell"
 #property indicator_type6   DRAW_ARROW
-#property indicator_color6  clrGray
-#property indicator_width6  1
+#property indicator_color6  clrOrangeRed
+#property indicator_width6  2
 
-// Plot 6: Rejected Short
-#property indicator_label7  "Rejected Short"
-#property indicator_type7   DRAW_ARROW
-#property indicator_color7  clrGray
-#property indicator_width7  1
+// Plot 6: ConfLong % — hidden data buffer for EA via iCustom(buffer 6)
+#property indicator_label7  "ConfLong%"
+#property indicator_type7   DRAW_NONE
 
-// Plot 7: Trail Flip (direction change)
-#property indicator_label8  "Trail Flip"
-#property indicator_type8   DRAW_ARROW
-#property indicator_color8  clrYellow
-#property indicator_width8  2
+// Plot 7: ConfShort % — hidden data buffer for EA via iCustom(buffer 7)
+#property indicator_label8  "ConfShort%"
+#property indicator_type8   DRAW_NONE
 
 //+------------------------------------------------------------------+
 //| INPUTS — Matching Pine parameter names and defaults exactly      |
@@ -122,22 +119,24 @@ input double vwap_weight      = 1.0;         // VWAP Weight
 input double fib_weight       = 0.5;         // Fib Weight
 input double vp_weight_inp    = 0.5;         // VP Weight
 
-// Group 10: Dashboard
-input bool   dashOn = true; // Show Dashboard
+// Group 9: Display
+input bool   dashOn      = true;  // Show Dashboard
+input double arrowOffset = 1.0;   // Arrow Offset (× ATR)
 
 //+------------------------------------------------------------------+
 //| INDICATOR BUFFERS                                                |
 //+------------------------------------------------------------------+
-double TrailBuffer[];       // 0 - Trail line
-double ATMBuyBuffer[];      // 1 - ⚡Buy arrows
-double ATMSellBuffer[];     // 2 - ⚡Sell arrows
-double SmartBuyBuffer[];    // 3 - 🧠Buy arrows
-double SmartSellBuffer[];   // 4 - 🧠Sell arrows
-double RejLongBuffer[];     // 5 - Rejected long
-double RejShortBuffer[];    // 6 - Rejected short
-double FlipBuffer[];        // 7 - Trail flip
-double ConfLongBuffer[];    // 8 - Bull confidence % (for EA reads via iCustom)
-double ConfShortBuffer[];   // 9 - Bear confidence % (for EA reads via iCustom)
+double TrailBullBuffer[];   // 0 — green trail segment (trend == 1)
+double TrailBearBuffer[];   // 1 — red trail segment   (trend == -1)
+double ATMBuyBuffer[];      // 2 — ⚡Buy  arrows
+double ATMSellBuffer[];     // 3 — ⚡Sell arrows
+double SmartBuyBuffer[];    // 4 — 🧠Buy  arrows
+double SmartSellBuffer[];   // 5 — 🧠Sell arrows
+double ConfLongBuffer[];    // 6 — Bull confidence % (EA reads via iCustom buffer 6)
+double ConfShortBuffer[];   // 7 — Bear confidence % (EA reads via iCustom buffer 7)
+// Calculation-only (not plotted, not accessible via iCustom index)
+double RejLongBuffer[];     // 8
+double RejShortBuffer[];    // 9
 
 // Internal state arrays (not plotted)
 int    g_ltf_trend[];
@@ -154,7 +153,7 @@ double g_vp_vah[];
 double g_vp_val[];
 
 //+------------------------------------------------------------------+
-//| EMA — Pine ta.ema() exact match (iterative, no lookback issue)  |
+//| EMA — Pine ta.ema() exact match                                 |
 //+------------------------------------------------------------------+
 void CalcEMA(const double &src[], double &out[], int period, int count)
 {
@@ -221,7 +220,6 @@ void CalcRSI(const double &close[], double &rsi[], int period, int count)
 
 //+------------------------------------------------------------------+
 //| LIQUIDITY TRAIL — exact port of Pine calcLiqTrail()             |
-//| State is carried bar-to-bar via arrays (replaces Pine var)      |
 //+------------------------------------------------------------------+
 void CalcLiqTrail(const double &close[], const double &ema[], const double &atr_arr[],
                   double &trail[], int &trend[], int count, double mult)
@@ -264,14 +262,12 @@ void CalcATMBot(const double &close[],
             tb[i] = close[i] - nl_b;
             ts[i] = close[i] + nl_s;
         } else {
-            // Buy trail: ratchets up when price above, ratchets down when below
             if(close[i] > tb[i-1] && close[i-1] > tb[i-1])
                 tb[i] = MathMax(tb[i-1], close[i] - nl_b);
             else if(close[i] < tb[i-1] && close[i-1] < tb[i-1])
                 tb[i] = MathMin(tb[i-1], close[i] + nl_b);
             else
                 tb[i] = close[i] > tb[i-1] ? close[i] - nl_b : close[i] + nl_b;
-            // Sell trail
             if(close[i] > ts[i-1] && close[i-1] > ts[i-1])
                 ts[i] = MathMax(ts[i-1], close[i] - nl_s);
             else if(close[i] < ts[i-1] && close[i-1] < ts[i-1])
@@ -281,9 +277,7 @@ void CalcATMBot(const double &close[],
         }
         buy_sig[i] = false; sell_sig[i] = false;
         if(i > 0) {
-            // crossover(ema_buy=close, trail_buy): close crosses above trail_buy
             bool cross_up = (close[i] > tb[i]) && (close[i-1] <= tb[i-1]);
-            // crossover(trail_sell, ema_sell=close): trail_sell crosses above close
             bool cross_dn = (ts[i] > close[i]) && (ts[i-1] <= close[i-1]);
             buy_sig[i]  = cross_up && (close[i] > tb[i]);
             sell_sig[i] = cross_dn && (close[i] < ts[i]);
@@ -298,12 +292,10 @@ bool CalcMTFTrail(ENUM_TIMEFRAMES tf, const datetime &cur_time[], int cur_count,
                   int &trend_out[], int malen, int atrlen, double mult)
 {
     MqlRates rates[];
-    // Fetch enough history. For M1 chart + H1 trail we need ~1000 H1 bars.
     int fetch = 2000;
     int copied = CopyRates(_Symbol, tf, 0, fetch, rates);
     if(copied < atrlen + malen + 10) return false;
 
-    // CopyRates returns [0]=most recent. Reverse to chronological (0=oldest).
     int n = copied;
     ArrayResize(rates, n);
     for(int i = 0; i < n / 2; i++) {
@@ -328,14 +320,9 @@ bool CalcMTFTrail(ENUM_TIMEFRAMES tf, const datetime &cur_time[], int cur_count,
     CalcLiqTrail(tf_close, tf_ema, tf_atr, tf_trail, tf_trend, n, mult);
 
     ArrayResize(trend_out, cur_count);
-    long tf_period_sec = PeriodSeconds(tf);
-
     for(int ci = 0; ci < cur_count; ci++) {
         datetime bar_t = cur_time[ci];
-        // Find the HTF bar whose time <= bar_t (largest time <= bar_t)
-        int htf_idx = -1;
-        // Binary search (rates are chronological now)
-        int lo = 0, hi = n - 1;
+        int htf_idx = -1, lo = 0, hi = n - 1;
         while(lo <= hi) {
             int mid = (lo + hi) / 2;
             if((datetime)rates[mid].time <= bar_t) { htf_idx = mid; lo = mid + 1; }
@@ -367,19 +354,16 @@ void CalcRSIMomentum(const double &rsi[], const double &ema5[],
         bool m5_bull = dm5 > 0;
         bool m5_bear = dm5 < 0;
 
-        // Pine: p_mom = rsi[1]<pmom and rsi>pmom and rsi>nmom and change_ema5>0
         bool p_mom = (rsi[i-1] < pmom) && (rsi[i] > pmom) && (rsi[i] > nmom) && (d5 > 0);
         bool n_mom = (rsi[i] < nmom) && (d5 < 0);
 
         bool p_sust = sustain_momentum && pos[i-1] && (rsi[i] > pmom) && (d5 > 0);
         bool n_sust = sustain_momentum && neg[i-1] && (rsi[i] < nmom) && (d5 < 0);
 
-        // Persist state
         pos[i] = pos[i-1]; neg[i] = neg[i-1];
         if(p_mom || p_sust) { pos[i] = true;  neg[i] = false; }
         if(n_mom || n_sust) { pos[i] = false; neg[i] = true;  }
 
-        // M5 momentum state
         bool p_mom_m5 = (rsi_m5[i-1] < pmom) && (rsi_m5[i] > pmom) && (rsi_m5[i] > nmom) && m5_bull;
         bool n_mom_m5 = (rsi_m5[i] < nmom) && m5_bear;
 
@@ -387,7 +371,6 @@ void CalcRSIMomentum(const double &rsi[], const double &ema5[],
         if(p_mom_m5) { pos_m5[i] = true;  neg_m5[i] = false; }
         if(n_mom_m5) { pos_m5[i] = false; neg_m5[i] = true;  }
 
-        // smartBull / smartBear — for newSmartBull/Bear we need prev state
         bool sb_now  = (rsi[i] > pmom)   && (d5 > 0) && (!use_m5_confirm || ((rsi_m5[i] > pmom) && m5_bull));
         bool se_now  = (rsi[i] < nmom)   && (d5 < 0) && (!use_m5_confirm || ((rsi_m5[i] < nmom) && m5_bear));
 
@@ -399,7 +382,6 @@ void CalcRSIMomentum(const double &rsi[], const double &ema5[],
         newBull[i] = sb_now && !sb_prev;
         newBear[i] = se_now && !se_prev;
 
-        // pcondition: positive and not positive[1] and (positive_m5 or (rsi_m5>nmom and m5_bull_mom))
         pcond[i] = pos[i] && !pos[i-1] && (pos_m5[i] || (rsi_m5[i] > nmom && m5_bull));
         ncond[i] = neg[i] && !neg[i-1] && (neg_m5[i] || (rsi_m5[i] < pmom && m5_bear));
     }
@@ -422,7 +404,6 @@ void CalcMarketStructure(const double &high[], const double &low[], const double
     bool use_close = (bosConfType == "Candle Close");
 
     for(int i = sw; i < count - sw; i++) {
-        // Pivot high: high[i] is highest in [i-sw, i+sw]
         bool is_ph = true;
         for(int k = i - sw; k <= i + sw && is_ph; k++)
             if(k != i && high[k] >= high[i]) is_ph = false;
@@ -442,7 +423,6 @@ void CalcMarketStructure(const double &high[], const double &low[], const double
             prevL = low[i]; hasPL = true; loActive = true;
         }
 
-        // BOS check: has price broken prev structure level?
         double hSrc = use_close ? close[i] : high[i];
         double lSrc = use_close ? close[i] : low[i];
         if(hasPH && hiActive && hSrc > prevH) {
@@ -456,14 +436,12 @@ void CalcMarketStructure(const double &high[], const double &low[], const double
 
         bias[i] = cur_bias;
     }
-    // Forward-fill bias
     for(int i = 1; i < count; i++)
         if(bias[i] == 0) bias[i] = bias[i-1];
 }
 
 //+------------------------------------------------------------------+
 //| VWAP ANCHOR — adaptive EWMA from most recent swing point        |
-//| Port of Pine STEP 8                                             |
 //+------------------------------------------------------------------+
 void CalcVWAPAnchor(const double &high[], const double &low[], const double &close[],
                     const double &vol[], int count, int prd_v, double apt,
@@ -474,28 +452,20 @@ void CalcVWAPAnchor(const double &high[], const double &low[], const double &clo
 
     int phL = 0, plL = 0;
     int last_swing = 0;
-    double alpha = 1.0 - MathExp(-MathLog(2.0) / MathMax(1.0, apt));
 
     for(int i = 0; i < count; i++) {
         int win = MathMin(i + 1, prd_v);
         double hh_val = -1e18, ll_val = 1e18;
-        int hh_idx = i, ll_idx = i;
         for(int k = MathMax(0, i - win + 1); k <= i; k++) {
-            if(high[k] > hh_val) { hh_val = high[k]; hh_idx = k; }
-            if(low[k]  < ll_val) { ll_val = low[k];  ll_idx = k; }
+            if(high[k] > hh_val) { hh_val = high[k]; }
+            if(low[k]  < ll_val) { ll_val = low[k];  }
         }
         if(high[i] >= hh_val) phL = i;
         if(low[i]  <= ll_val) plL = i;
 
-        // Pine: dir_vwap = vw_phL > vw_plL ? 1 : -1
-        // Higher bar index = more recent.
-        // phL > plL → most recent swing is a high → upswing just ended?
-        // Per Pine behavior: dir=1 when phL>plL (high bar more recent = we're in uptrend)
         int dir = (phL > plL) ? 1 : -1;
-
         if(i == 0 || dir != dir_out[i-1])
             last_swing = dir;
-
         dir_out[i] = last_swing;
     }
 }
@@ -513,7 +483,6 @@ void CalcFibBands(const double &hlc3[], const double &high[], const double &low[
     if(use_atr)
         CalcATR(high, low, close, vol_fib, fib_atr, count);
     else {
-        // stdev approximation
         for(int i = 0; i < count; i++) {
             int w = MathMin(i + 1, fib_len);
             double mean = 0;
@@ -534,8 +503,6 @@ void CalcFibBands(const double &hlc3[], const double &high[], const double &low[
 
 //+------------------------------------------------------------------+
 //| VOLUME PROFILE — daily sessions, current TF bars                |
-//| Pine uses lower_tf tick data; we use current TF bars per day.   |
-//| Output: poc/vah/val per bar, reset each day.                    |
 //+------------------------------------------------------------------+
 void CalcVolumeProfile(const datetime &time[], const double &high[], const double &low[],
                        const double &close[], const long &tick_vol[], int count,
@@ -581,13 +548,11 @@ void CalcVolumeProfile(const datetime &time[], const double &high[], const doubl
                 buckets[bkt] += (double)tick_vol[k];
             }
 
-            // POC
             int poc_idx = 0; double max_v = 0;
             for(int b = 0; b < res; b++)
                 if(buckets[b] > max_v) { max_v = buckets[b]; poc_idx = b; }
             double poc_p = s_lo + (poc_idx + 0.5) * gap;
 
-            // Value area
             double total_vol = 0;
             for(int b = 0; b < res; b++) total_vol += buckets[b];
             double target = total_vol * va_pct / 100.0;
@@ -643,7 +608,8 @@ void DrawDashboard(int ltf_trend, double conf_long, double conf_short,
     string str_ok = (str_bias  == ltf_trend) ? "OK" : "!!";
     string mtf_ls = mtf_fb ? "FULL" : mtf_pb ? "PARTIAL" : "FAIL";
     string mtf_ss = mtf_fs ? "FULL" : mtf_ps ? "PARTIAL" : "FAIL";
-    string vp_pos = (vp_vah > 0 && close_p > vp_vah) ? "ABOVE VAH" : (vp_val > 0 && close_p < vp_val) ? "BELOW VAL" : "IN VALUE";
+    string vp_pos = (vp_vah > 0 && close_p > vp_vah) ? "ABOVE VAH"
+                  : (vp_val > 0 && close_p < vp_val)  ? "BELOW VAL" : "IN VALUE";
     string wait_s, flip_s;
     if(ltf_trend == 1)
         wait_s = pass_l ? "ATM Trigger" : "Conf " + IntegerToString((int)conf_long) + "%->" + IntegerToString(conf_thresh) + "%";
@@ -681,35 +647,52 @@ void DrawDashboard(int ltf_trend, double conf_long, double conf_short,
 //+------------------------------------------------------------------+
 int OnInit()
 {
-    SetIndexBuffer(0, TrailBuffer,    INDICATOR_DATA);
-    SetIndexBuffer(1, ATMBuyBuffer,   INDICATOR_DATA);
-    SetIndexBuffer(2, ATMSellBuffer,  INDICATOR_DATA);
-    SetIndexBuffer(3, SmartBuyBuffer, INDICATOR_DATA);
-    SetIndexBuffer(4, SmartSellBuffer,INDICATOR_DATA);
-    SetIndexBuffer(5, RejLongBuffer,  INDICATOR_DATA);
-    SetIndexBuffer(6, RejShortBuffer, INDICATOR_DATA);
-    SetIndexBuffer(7, FlipBuffer,     INDICATOR_DATA);
-    SetIndexBuffer(8, ConfLongBuffer, INDICATOR_DATA);
-    SetIndexBuffer(9, ConfShortBuffer,INDICATOR_DATA);
+    // Trail line buffers (split by direction for two-color effect)
+    SetIndexBuffer(0, TrailBullBuffer, INDICATOR_DATA);
+    SetIndexBuffer(1, TrailBearBuffer, INDICATOR_DATA);
+    // Signal arrow buffers
+    SetIndexBuffer(2, ATMBuyBuffer,    INDICATOR_DATA);
+    SetIndexBuffer(3, ATMSellBuffer,   INDICATOR_DATA);
+    SetIndexBuffer(4, SmartBuyBuffer,  INDICATOR_DATA);
+    SetIndexBuffer(5, SmartSellBuffer, INDICATOR_DATA);
+    // Confidence buffers (INDICATOR_DATA so EA can read via iCustom buffer 6/7)
+    SetIndexBuffer(6, ConfLongBuffer,  INDICATOR_DATA);
+    SetIndexBuffer(7, ConfShortBuffer, INDICATOR_DATA);
+    // Calculation-only (rejected signals stored but not plotted)
+    SetIndexBuffer(8, RejLongBuffer,   INDICATOR_CALCULATIONS);
+    SetIndexBuffer(9, RejShortBuffer,  INDICATOR_CALCULATIONS);
 
-    // Empty values (0 = no signal for arrow plots)
-    for(int p = 0; p < 10; p++)
-        PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, 0.0);
-    PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+    // Empty value for all buffers
+    for(int p = 0; p < 8; p++)
+        PlotIndexSetDouble(p, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-    // Arrow codes (Wingdings-style MT5 arrows)
-    PlotIndexSetInteger(1, PLOT_ARROW, 233);  // ⚡Buy  — up arrow
-    PlotIndexSetInteger(2, PLOT_ARROW, 234);  // ⚡Sell — down arrow
-    PlotIndexSetInteger(3, PLOT_ARROW, 233);  // 🧠Buy
-    PlotIndexSetInteger(4, PLOT_ARROW, 234);  // 🧠Sell
-    PlotIndexSetInteger(5, PLOT_ARROW, 251);  // Rejected — X
-    PlotIndexSetInteger(6, PLOT_ARROW, 251);  // Rejected — X
-    PlotIndexSetInteger(7, PLOT_ARROW, 168);  // Flip — diamond
+    // Arrow symbol codes
+    // 241 = ▲ solid filled up triangle   242 = ▼ solid filled down triangle
+    // These render correctly on every MT5 build regardless of DPI/font scaling.
+    // (codes 233/234 can render as boxes on high-DPI displays)
+    PlotIndexSetInteger(2, PLOT_ARROW, 241);  // ATM Buy  — large solid ▲
+    PlotIndexSetInteger(3, PLOT_ARROW, 242);  // ATM Sell — large solid ▼
+    PlotIndexSetInteger(4, PLOT_ARROW, 241);  // Smart Buy
+    PlotIndexSetInteger(5, PLOT_ARROW, 242);  // Smart Sell
+
+    // Pixel shift: push buy arrows further below candles, sell above
+    PlotIndexSetInteger(2, PLOT_ARROW_SHIFT, -8);
+    PlotIndexSetInteger(3, PLOT_ARROW_SHIFT,  8);
+    PlotIndexSetInteger(4, PLOT_ARROW_SHIFT, -8);
+    PlotIndexSetInteger(5, PLOT_ARROW_SHIFT,  8);
 
     IndicatorSetString(INDICATOR_SHORTNAME, "AGENT PROTOCOL");
     IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
     return INIT_SUCCEEDED;
 }
+
+//+------------------------------------------------------------------+
+//| MTF cache — only recompute when a new bar closes                |
+//| Without this, CopyRates() runs on every tick (dozens/sec on M1) |
+//+------------------------------------------------------------------+
+int    g_cached_bar_count = -1;  // rates_total when we last computed MTF
+int    g_cached_h1_trend[];
+int    g_cached_m15_trend[];
 
 //+------------------------------------------------------------------+
 //| OnDeinit                                                         |
@@ -738,7 +721,6 @@ int OnCalculate(const int rates_total,
 
     int count = rates_total;
 
-    // --- Size all internal arrays ---
     ArrayResize(g_ltf_trend,   count); ArrayResize(g_ltf_trail, count);
     ArrayResize(g_m15_trend,   count); ArrayResize(g_h1_trend,  count);
     ArrayResize(g_rsi_pos,     count); ArrayResize(g_rsi_neg,   count);
@@ -747,7 +729,7 @@ int OnCalculate(const int rates_total,
     ArrayResize(g_vp_poc,      count); ArrayResize(g_vp_vah, count); ArrayResize(g_vp_val, count);
 
     // =====================================================================
-    // STEP 1: LTF Trail (current timeframe)
+    // STEP 1: LTF Trail
     // =====================================================================
     double ltf_ema[], ltf_atr_a[];
     ArrayResize(ltf_ema, count); ArrayResize(ltf_atr_a, count);
@@ -756,20 +738,32 @@ int OnCalculate(const int rates_total,
     CalcLiqTrail(close, ltf_ema, ltf_atr_a, g_ltf_trail, g_ltf_trend, count, atr_mult);
 
     // =====================================================================
-    // STEP 2: MTF Trails (H1 and M15)
+    // STEP 2: MTF Trails — recompute only when bar count changes
+    // (i.e. on bar close or first load, NOT on every tick)
     // =====================================================================
     ENUM_TIMEFRAMES cur_period = (ENUM_TIMEFRAMES)Period();
-    if(cur_period < PERIOD_H1)
-        CalcMTFTrail(PERIOD_H1, time, count, g_h1_trend, ma_len, atr_len, atr_mult);
-    else
-        ArrayCopy(g_h1_trend, g_ltf_trend);
+    bool mtf_stale = (rates_total != g_cached_bar_count);
 
-    if(cur_period < PERIOD_M15)
-        CalcMTFTrail(PERIOD_M15, time, count, g_m15_trend, ma_len, atr_len, atr_mult);
-    else if(cur_period == PERIOD_M15)
-        ArrayCopy(g_m15_trend, g_ltf_trend);
-    else
-        ArrayCopy(g_m15_trend, g_h1_trend);
+    if(mtf_stale) {
+        ArrayResize(g_cached_h1_trend,  count);
+        ArrayResize(g_cached_m15_trend, count);
+
+        if(cur_period < PERIOD_H1)
+            CalcMTFTrail(PERIOD_H1, time, count, g_cached_h1_trend, ma_len, atr_len, atr_mult);
+        else
+            ArrayCopy(g_cached_h1_trend, g_ltf_trend);
+
+        if(cur_period < PERIOD_M15)
+            CalcMTFTrail(PERIOD_M15, time, count, g_cached_m15_trend, ma_len, atr_len, atr_mult);
+        else if(cur_period == PERIOD_M15)
+            ArrayCopy(g_cached_m15_trend, g_ltf_trend);
+        else
+            ArrayCopy(g_cached_m15_trend, g_cached_h1_trend);
+
+        g_cached_bar_count = rates_total;
+    }
+    ArrayCopy(g_h1_trend,  g_cached_h1_trend,  0, 0, count);
+    ArrayCopy(g_m15_trend, g_cached_m15_trend, 0, 0, count);
 
     // =====================================================================
     // STEP 3: ATM Bot
@@ -791,16 +785,20 @@ int OnCalculate(const int rates_total,
     CalcRSI(close, rsi_cur, rsiLen, count);
     CalcEMA(close, ema5_cur, rsi_ema_len, count);
 
-    // M5 RSI — fetch M5 bars and compute, then map to current bars
+    // M5 RSI — also cached, recomputed only on new bar
+    static double g_m5_rsi_cache[];
+    static double g_m5_ema_cache[];
+    static int    g_m5_cache_bar = -1;
+
     double rsi_m5_out[], ema_m5_out[];
     ArrayResize(rsi_m5_out, count); ArrayResize(ema_m5_out, count);
 
-    if(cur_period <= PERIOD_M5) {
-        // We are on M5 or lower — fetch M5 data
+    bool m5_stale = (rates_total != g_m5_cache_bar);
+
+    if(cur_period <= PERIOD_M5 && m5_stale) {
         MqlRates m5_rates[];
         int m5c = CopyRates(_Symbol, PERIOD_M5, 0, 3000, m5_rates);
         if(m5c > rsiLen + rsi_ema_len) {
-            // Reverse to chronological
             for(int i = 0; i < m5c / 2; i++) {
                 MqlRates t = m5_rates[i]; m5_rates[i] = m5_rates[m5c-1-i]; m5_rates[m5c-1-i] = t;
             }
@@ -809,7 +807,9 @@ int OnCalculate(const int rates_total,
             for(int i = 0; i < m5c; i++) m5_close[i] = m5_rates[i].close;
             CalcRSI(m5_close, m5_rsi, rsiLen, m5c);
             CalcEMA(m5_close, m5_ema5, rsi_ema_len, m5c);
-            // Map M5 values to current bars
+
+            ArrayResize(g_m5_rsi_cache, count);
+            ArrayResize(g_m5_ema_cache, count);
             for(int ci = 0; ci < count; ci++) {
                 int k = -1, lo = 0, hi = m5c - 1;
                 while(lo <= hi) {
@@ -817,13 +817,16 @@ int OnCalculate(const int rates_total,
                     if((datetime)m5_rates[mid].time <= time[ci]) { k = mid; lo = mid + 1; }
                     else hi = mid - 1;
                 }
-                rsi_m5_out[ci]  = k >= 0 ? m5_rsi[k]  : rsi_cur[ci];
-                ema_m5_out[ci]  = k >= 0 ? m5_ema5[k] : ema5_cur[ci];
+                g_m5_rsi_cache[ci] = k >= 0 ? m5_rsi[k]  : rsi_cur[ci];
+                g_m5_ema_cache[ci] = k >= 0 ? m5_ema5[k] : ema5_cur[ci];
             }
-        } else {
-            ArrayCopy(rsi_m5_out, rsi_cur);
-            ArrayCopy(ema_m5_out, ema5_cur);
+            g_m5_cache_bar = rates_total;
         }
+    }
+
+    if(cur_period <= PERIOD_M5 && ArraySize(g_m5_rsi_cache) == count) {
+        ArrayCopy(rsi_m5_out, g_m5_rsi_cache);
+        ArrayCopy(ema_m5_out, g_m5_ema_cache);
     } else {
         ArrayCopy(rsi_m5_out, rsi_cur);
         ArrayCopy(ema_m5_out, ema5_cur);
@@ -870,12 +873,12 @@ int OnCalculate(const int rates_total,
                           vpResolution, vpVAwidth, g_vp_poc, g_vp_vah, g_vp_val);
     else {
         ArrayInitialize(g_vp_poc, 0);
-        ArrayInitialize(g_vp_vah, 1e15);
+        ArrayInitialize(g_vp_vah, EMPTY_VALUE);
         ArrayInitialize(g_vp_val, 0);
     }
 
     // =====================================================================
-    // STEP 9–12: Confluence + Signal Generation
+    // STEP 9–12: Confluence + Signal Generation + Buffer Assignment
     // =====================================================================
     int conf_thresh = 60;
     if(claw_mode == "Conservative")  conf_thresh = 80;
@@ -896,26 +899,20 @@ int OnCalculate(const int rates_total,
 
         double bs = 0, bm = 0, ss = 0, sm = 0;
 
-        // MTF
         bs += mtf_fb ? mtf_weight : (mtf_pb ? mtf_weight * 0.4 : 0.0); bm += mtf_weight;
         ss += mtf_fs ? mtf_weight : (mtf_ps ? mtf_weight * 0.4 : 0.0); sm += mtf_weight;
-        // Structure
         bs += g_struct_bias[i] ==  1 ? struct_weight : 0; bm += struct_weight;
         ss += g_struct_bias[i] == -1 ? struct_weight : 0; sm += struct_weight;
-        // RSI
         bs += g_rsi_pos[i] ? rsi_weight_inp : 0; bm += rsi_weight_inp;
         ss += g_rsi_neg[i] ? rsi_weight_inp : 0; sm += rsi_weight_inp;
-        // VWAP
         bs += g_vwap_dir[i] ==  1 ? vwap_weight : 0; bm += vwap_weight;
         ss += g_vwap_dir[i] == -1 ? vwap_weight : 0; sm += vwap_weight;
-        // Fib (optional gate)
         if(requireFibTrend) {
             bs += g_fib_trend[i] ==  1 ? fib_weight : 0; bm += fib_weight;
             ss += g_fib_trend[i] == -1 ? fib_weight : 0; sm += fib_weight;
         }
-        // VP
         bool vp_bull = vpEnabled && g_vp_val[i] > 0 && close[i] > g_vp_val[i];
-        bool vp_bear = vpEnabled && g_vp_vah[i] > 0 && close[i] < g_vp_vah[i];
+        bool vp_bear = vpEnabled && g_vp_vah[i] > 0 && g_vp_vah[i] < EMPTY_VALUE && close[i] < g_vp_vah[i];
         if(vpEnabled) {
             bs += vp_bull ? vp_weight_inp : 0; bm += vp_weight_inp;
             ss += vp_bear ? vp_weight_inp : 0; sm += vp_weight_inp;
@@ -926,19 +923,16 @@ int OnCalculate(const int rates_total,
         bool   pass_l = conf_l >= conf_thresh;
         bool   pass_s = conf_s >= conf_thresh;
 
-        // Triggers
         bool t_atm_b = atm_b[i];
         bool t_atm_s = atm_s[i];
         bool t_sm_b  = new_bull[i];
         bool t_sm_s  = new_bear[i];
 
-        // Gated (trail direction must allow)
         bool g_atm_b = t_atm_b && trail_l;
         bool g_atm_s = t_atm_s && trail_s;
         bool g_sm_b  = t_sm_b  && trail_l;
         bool g_sm_s  = t_sm_s  && trail_s;
 
-        // Final (confidence must pass)
         bool f_atm_b = g_atm_b && pass_l;
         bool f_atm_s = g_atm_s && pass_s;
         bool f_sm_b  = g_sm_b  && pass_l;
@@ -947,36 +941,39 @@ int OnCalculate(const int rates_total,
         bool final_l = f_atm_b || f_sm_b;
         bool final_s = f_atm_s || f_sm_s;
 
-        // Rejected signals
         bool rej_l = (t_atm_b && !trail_l) || (t_sm_b && !trail_l) || ((g_atm_b || g_sm_b) && !pass_l);
         bool rej_s = (t_atm_s && !trail_s) || (t_sm_s && !trail_s) || ((g_atm_s || g_sm_s) && !pass_s);
 
-        // Position state tracking
         if(final_l && posState <= 0) posState =  1;
         if(final_s && posState >= 0) posState = -1;
 
-        // Trail flip
-        bool flip_b = g_ltf_trend[i] ==  1 && (i > 0 ? g_ltf_trend[i-1] == -1 : false);
-        bool flip_s = g_ltf_trend[i] == -1 && (i > 0 ? g_ltf_trend[i-1] ==  1 : false);
+        // ── Trail: split into bull (green) / bear (red) segments ───────────
+        // At flip bars both buffers get the trail value so there is no 1-bar gap.
+        bool flip = (i > 0) && (g_ltf_trend[i] != g_ltf_trend[i-1]);
+        if(trail_l) {
+            TrailBullBuffer[i] = g_ltf_trail[i];
+            TrailBearBuffer[i] = flip ? g_ltf_trail[i] : EMPTY_VALUE;
+        } else {
+            TrailBullBuffer[i] = flip ? g_ltf_trail[i] : EMPTY_VALUE;
+            TrailBearBuffer[i] = g_ltf_trail[i];
+        }
 
-        // ── Buffer assignments ──────────────────────────────────────────
-        bool trend_chg = (i > 0) && (g_ltf_trend[i] != g_ltf_trend[i-1]);
-        TrailBuffer[i]    = trend_chg ? EMPTY_VALUE : g_ltf_trail[i];
+        // ── Signal arrows: price offset = arrowOffset × ATR ────────────────
+        double off = ltf_atr_a[i] * arrowOffset;
+        ATMBuyBuffer[i]    = f_atm_b ? low[i]  - off       : EMPTY_VALUE;
+        ATMSellBuffer[i]   = f_atm_s ? high[i] + off       : EMPTY_VALUE;
+        SmartBuyBuffer[i]  = f_sm_b  ? low[i]  - off * 0.6 : EMPTY_VALUE;
+        SmartSellBuffer[i] = f_sm_s  ? high[i] + off * 0.6 : EMPTY_VALUE;
 
-        double offset = ltf_atr_a[i] * 0.3;
-        ATMBuyBuffer[i]    = f_atm_b ? low[i]  - offset      : 0;
-        ATMSellBuffer[i]   = f_atm_s ? high[i] + offset      : 0;
-        SmartBuyBuffer[i]  = f_sm_b  ? low[i]  - offset*0.6  : 0;
-        SmartSellBuffer[i] = f_sm_s  ? high[i] + offset*0.6  : 0;
-        RejLongBuffer[i]   = rej_l   ? low[i]  - offset*1.4  : 0;
-        RejShortBuffer[i]  = rej_s   ? high[i] + offset*1.4  : 0;
-        FlipBuffer[i]      = (flip_b || flip_s) ? g_ltf_trail[i] : 0;
-
-        // Confidence buffers — readable by EA via iCustom(buffer 8/9)
+        // ── Confidence (read by EA via iCustom buffer 6 / 7) ────────────────
         ConfLongBuffer[i]  = conf_l;
         ConfShortBuffer[i] = conf_s;
 
-        // ── Dashboard (last bar only) ────────────────────────────────────
+        // ── Rejected signals stored for future use ──────────────────────────
+        RejLongBuffer[i]  = rej_l ? low[i]  - off * 1.4 : EMPTY_VALUE;
+        RejShortBuffer[i] = rej_s ? high[i] + off * 1.4 : EMPTY_VALUE;
+
+        // ── Dashboard (last bar only) ────────────────────────────────────────
         if(dashOn && i == count - 1) {
             DrawDashboard(g_ltf_trend[i], conf_l, conf_s, conf_thresh,
                           g_h1_trend[i], g_m15_trend[i], g_struct_bias[i],
