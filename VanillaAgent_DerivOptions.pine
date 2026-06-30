@@ -872,12 +872,6 @@ rejected_conf_sell  = (gated_ATM_sell or gated_smart_sell) and not bear_conf_pas
 any_rejected_long   = rejected_ATM_buy  or rejected_smart_buy  or rejected_conf_buy
 any_rejected_short  = rejected_ATM_sell or rejected_smart_sell or rejected_conf_sell
 
-var int posState = 0
-if final_long and posState <= 0
-    posState := 1
-else if final_short and posState >= 0
-    posState := -1
-
 bool flip_bull = ltf_trend == 1  and ltf_trend[1] == -1
 bool flip_bear = ltf_trend == -1 and ltf_trend[1] == 1
 
@@ -885,8 +879,15 @@ bool flip_bear = ltf_trend == -1 and ltf_trend[1] == 1
 bool final_sniper_call = flip_bull and van_sniper_trail and bull_conf_pass
 bool final_sniper_put  = flip_bear and van_sniper_trail and bear_conf_pass
 
+// final_long/final_short must be declared AFTER sniper bools (forward-ref guard)
 final_long  = final_ATM_buy  or final_smart_buy  or final_sniper_call
 final_short = final_ATM_sell or final_smart_sell or final_sniper_put
+
+var int posState = 0
+if final_long and posState <= 0
+    posState := 1
+else if final_short and posState >= 0
+    posState := -1
 
 // =========================================================================
 // STEP 13: VANILLA OPTIONS LAYER
@@ -1058,7 +1059,8 @@ if barstate.islast and showLongevity
     if array.size(upperDraw) > 0
         for i = 0 to array.size(upperDraw) - 1
             d = array.get(upperDraw, i)
-            line.delete(d.top); line.delete(d.bot)
+            line.delete(d.top)
+            line.delete(d.bot)
             if not na(d.fill)
                 linefill.delete(d.fill)
             label.delete(d.lbl)
@@ -1066,7 +1068,8 @@ if barstate.islast and showLongevity
     if array.size(lowerDraw) > 0
         for i = 0 to array.size(lowerDraw) - 1
             d = array.get(lowerDraw, i)
-            line.delete(d.top); line.delete(d.bot)
+            line.delete(d.top)
+            line.delete(d.bot)
             if not na(d.fill)
                 linefill.delete(d.fill)
             label.delete(d.lbl)
@@ -1256,7 +1259,7 @@ if dashOn and not na(dashTable)
 
     table.cell(dashTable, 0, 25, " CONF GATE ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
     table.merge_cells(dashTable, 1, 25, 3, 25)
-    string conf_label = final_sniper_call ? "SNIPER CALL — TRAIL ENTRY" : final_sniper_put ? "SNIPER PUT — TRAIL ENTRY" : final_ATM_buy ? "BUY CALL PRIMARY" : final_ATM_sell ? "BUY PUT PRIMARY" : final_smart_buy ? "ADD CALL SCALE-IN" : final_smart_sell ? "ADD PUT SCALE-IN" : (bull_conf_pass or bear_conf_pass) ? "CONF OK; NO TRIG" : "LOW CONF — WAIT"
+    string conf_label = final_sniper_call ? "SNIPER CALL — TRAIL ENTRY" : final_sniper_put ? "SNIPER PUT — TRAIL ENTRY" : final_ATM_buy ? "BUY CALL PRIMARY" : final_ATM_sell ? "BUY PUT PRIMARY" : final_smart_buy ? "ADD CALL SCALE-IN" : final_smart_sell ? "ADD PUT SCALE-IN" : (bull_conf_pass or bear_conf_pass) ? "CONF OK — NO TRIG" : "LOW CONF — WAIT"
     color  conf_color = final_long ? txt_bull : final_short ? txt_bear : gate_warn
     table.cell(dashTable, 1, 25, conf_label, text_color=conf_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
