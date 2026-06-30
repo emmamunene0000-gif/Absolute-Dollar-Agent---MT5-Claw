@@ -400,9 +400,10 @@ calcLiqTrail(mlen, alen, amult) =>
     [t_trend, t_trail]
 
 [ltf_trend, ltf_trail] = calcLiqTrail(ma_len, atr_len, atr_mult)
-[m15_trend, m15_trail] = request.security(syminfo.tickerid, "15", calcLiqTrail(ma_len, atr_len, atr_mult))
-[h1_trend,  h1_trail]  = request.security(syminfo.tickerid, "60", calcLiqTrail(ma_len, atr_len, atr_mult))
-[m5_trend,  m5_trail]  = request.security(syminfo.tickerid, "5",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[m5_trend,  m5_trail]  = request.security(syminfo.tickerid, "5",   calcLiqTrail(ma_len, atr_len, atr_mult))
+[m15_trend, m15_trail] = request.security(syminfo.tickerid, "15",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[h1_trend,  h1_trail]  = request.security(syminfo.tickerid, "60",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[h4_trend,  h4_trail]  = request.security(syminfo.tickerid, "240", calcLiqTrail(ma_len, atr_len, atr_mult))
 
 mtf_bullish = m15_trend == 1 and h1_trend == 1
 mtf_bearish = m15_trend == -1 and h1_trend == -1
@@ -1260,52 +1261,72 @@ else if not dashOn and not na(dashTable)
     prevPlace := ""
 
 // =========================================================================
-// STEP 17: ALERTS — self-aware JSON payloads
-// Pine does NOT track position state. Every payload below carries the full
-// architecture-state snapshot (confidence, trend, structure, strike, expiry)
-// so the external Brain can reconstruct *why* the signal fired without
-// querying Pine separately, and decide for itself how to act on it.
+// STEP 17: ALERTS — Telegram-native formatted messages
+//
+// TradingView Alert setup:
+//   Message field = {{alert_message}}
+//   Webhook URL   = https://api.telegram.org/botYOUR_TOKEN/sendMessage
+//   Chat ID param = embedded in webhook or handled by Jarvis relay
+//
+// Each alert fires as a fully-formatted Telegram message — no middleware,
+// no webhook parser needed. Pine carries the full architecture state so
+// Jarvis can reconstruct context from the message alone.
 // =========================================================================
-jsonPayload(string sigType, string bias, float confPct) =>
-    '{"system":"TRON_GLASSBOX","signal":"' + sigType + '"' +
-     ',"bias":"' + bias + '"' +
-     ',"symbol":"' + syminfo.ticker + '"' +
-     ',"timeframe":"' + timeframe.period + '"' +
-     ',"time":' + str.tostring(time) +
-     ',"price":' + str.tostring(close) +
-     ',"confidence_pct":' + str.tostring(math.round(confPct)) +
-     ',"conf_threshold":' + str.tostring(conf_threshold) +
-     ',"mtf_aligned":' + (bias == "CALL" ? str.tostring(mtf_bull_conf) : str.tostring(mtf_bear_conf)) +
-     ',"structure_bias":"' + (bullBOS ? "BULLISH" : bearBOS ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"trend_state":' + str.tostring(ltf_trend) +
-     ',"vwap_regime":"' + (vwapBullish ? "BULLISH" : vwapBearish ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"fib_regime":"' + (fibBullish ? "BULLISH" : fibBearish ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"call_strike":' + str.tostring(call_strike, "#.##") +
-     ',"put_strike":' + str.tostring(put_strike, "#.##") +
-     ',"strike_mode":"' + strike_mode + '"' +
-     ',"rec_expiry_min":' + str.tostring(rec_expiry) +
-     '}'
+
+trendLabel(int t) =>
+    t == 1 ? "🟢 BULL" : t == -1 ? "🔴 BEAR" : "⚪ NEUT"
+
+tronAlert(string sigType, string bias, float confPct) =>
+    string emoji  = bias == "CALL" ? "📈" : "📉"
+    string strike = bias == "CALL" ? str.tostring(call_strike, "#.##") : str.tostring(put_strike, "#.##")
+    string biasBlock = bias == "CALL" ?
+         "Bull " + str.tostring(math.round(bull_conf_pct)) + "% | Bear " + str.tostring(math.round(bear_conf_pct)) + "%" :
+         "Bear " + str.tostring(math.round(bear_conf_pct)) + "% | Bull " + str.tostring(math.round(bull_conf_pct)) + "%"
+
+    "🚀ABSOLUTE💰DOLLAR💰INTELLIGENCE💯\n" +
+    "📊 " + sigType + " — " + syminfo.ticker + " | " + timeframe.period + "m\n\n" +
+
+    "FRACTAL 4-LAYER SYNC\n" +
+    "L1 Sovereign (H4): " + trendLabel(h4_trend)  + "\n" +
+    "L2 Anchor   (H1):  " + trendLabel(h1_trend)  + "\n" +
+    "L3 Filter  (M15):  " + trendLabel(m15_trend) + "\n" +
+    "L4 Exec    (M5):   " + trendLabel(m5_trend)  + "\n\n" +
+
+    "CORE SIGNALS\n" +
+    "Confidence: " + biasBlock + "\n" +
+    "Structure:  " + (bullBOS ? "Bullish BOS" : bearBOS ? "Bearish BOS" : "Neutral") + "\n" +
+    "VWAP:       " + (vwapBullish ? "Bullish" : vwapBearish ? "Bearish" : "Neutral") + "\n" +
+    "Fib:        " + (fibBullish  ? "Bullish" : fibBearish  ? "Bearish" : "Neutral") + "\n\n" +
+
+    "BIAS: " + emoji + " " + bias + " — " + str.tostring(math.round(confPct)) + "% confidence\n\n" +
+
+    "VANILLA OPTIONS SETUP\n" +
+    "Strike:  " + strike + " (" + strike_mode + ")\n" +
+    "Expiry:  " + str.tostring(rec_expiry) + " minutes\n" +
+    "Entry:   " + str.tostring(close, "#.##") + "\n\n" +
+
+    "Signal: " + sigType + " | Gate: " + str.tostring(conf_threshold) + "% | MTF: " + (mtf_bull_conf or mtf_bear_conf ? "ALIGNED ✅" : "PARTIAL ⚠️")
 
 if final_call_entry
-    alert(jsonPayload("ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("⚡ CALL ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if final_put_entry
-    alert(jsonPayload("ENTRY", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("⚡ PUT ENTRY", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if continuation_call
-    alert(jsonPayload("CONTINUATION", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔄 CALL CONTINUATION", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if continuation_put
-    alert(jsonPayload("CONTINUATION", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔄 PUT CONTINUATION", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bullish_regime_shift
-    alert(jsonPayload("REGIME_SHIFT", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔀 BULLISH REGIME SHIFT", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bearish_regime_shift
-    alert(jsonPayload("REGIME_SHIFT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔀 BEARISH REGIME SHIFT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bull_conf_pass and not bull_conf_pass[1]
-    alert(jsonPayload("CONFIDENCE_PASS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("✅ CALL CONFIDENCE PASS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bear_conf_pass and not bear_conf_pass[1]
-    alert(jsonPayload("CONFIDENCE_PASS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("✅ PUT CONFIDENCE PASS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bullBOS
-    alert(jsonPayload("BOS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🏗 BULLISH BOS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bearBOS
-    alert(jsonPayload("BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🏗 BEARISH BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 
 // Static alertcondition() entries kept for TradingView's Alert dialog dropdown
 alertcondition(final_call_entry,    title="Vanilla Call Entry",      message="TRON GLASSBOX: CALL ENTRY")
