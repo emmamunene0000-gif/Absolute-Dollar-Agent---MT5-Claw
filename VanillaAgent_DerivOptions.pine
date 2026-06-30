@@ -1,0 +1,765 @@
+//@version=6
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  VANILLA AGENT — DERIV OPTIONS PROTOCOL                                     ║
+// ║  Specialized for Deriv Vanilla Options Trading                              ║
+// ║  Architecture: TRAIL → ATM TRIGGER → SCALE-IN → REGIME EXIT                ║
+// ╠══════════════════════════════════════════════════════════════════════════════╣
+// ║  SIGNAL HIERARCHY:                                                           ║
+// ║  [1] Liquidity Trail  = DIRECTION TRUTH (CALL vs PUT)                       ║
+// ║  [2] ATM Bot Signal   = PRIMARY ENTRY — buy first vanilla contract           ║
+// ║  [3] Smart Signal     = SCALE-IN — buy additional contract (same direction) ║
+// ║  [4] Trail Flip       = REGIME SHIFT — stop buying, consider early exit     ║
+// ║  [5] Confidence Gate  = ALL entries gated by weighted confluence score      ║
+// ╠══════════════════════════════════════════════════════════════════════════════╣
+// ║  VANILLA OPTIONS MECHANICS (Deriv):                                         ║
+// ║  • CALL = right to profit if price rises above strike at expiry             ║
+// ║  • PUT  = right to profit if price falls below strike at expiry             ║
+// ║  • Strike = ATM (current price) for highest probability + liquidity         ║
+// ║  • Duration = auto-suggested per timeframe                                  ║
+// ║  • Max loss = stake only. Profit unlimited with move magnitude              ║
+// ║  • Early exit available up to 60s before expiry                             ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+indicator("VANILLA AGENT — DERIV OPTIONS PROTOCOL",
+     shorttitle="VANILLA AGENT",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500,
+     max_boxes_count=500,
+     max_polylines_count=100,
+     max_bars_back=5000)
+
+// ============================================================================
+// SECTION 1 — INPUTS
+// ============================================================================
+const string G_TRAIL = "1. Liquidity Trail (Direction)"
+const string G_ATM   = "2. ATM Bot (Primary Entry Trigger)"
+const string G_SMC   = "3. Market Structure"
+const string G_RSI   = "4. RSI Momentum"
+const string G_VWAP  = "5. VWAP & Regime Filter"
+const string G_VP    = "6. Volume Profile"
+const string G_CONF  = "7. Confidence Engine"
+const string G_VAN   = "8. Vanilla Options Settings"
+const string G_VIS   = "9. Visuals & Dashboard"
+
+// Trail inputs
+ma_len   = input.int(50,   "MA Length",          minval=1,   maxval=500, group=G_TRAIL)
+atr_len  = input.int(14,   "ATR Length",          minval=1,   maxval=100, group=G_TRAIL)
+atr_mult = input.float(1.25,"Trail Distance (ATR)",minval=0.5, maxval=8.0, step=0.25, group=G_TRAIL)
+
+// ATM Bot inputs
+a_buy  = input.float(3.0, "Buy Sensitivity",  minval=0.1, step=0.1, group=G_ATM)
+c_buy  = input.int(1,     "Buy ATR Period",   minval=1,             group=G_ATM)
+a_sell = input.float(3.0, "Sell Sensitivity", minval=0.1, step=0.1, group=G_ATM)
+c_sell = input.int(1,     "Sell ATR Period",  minval=1,             group=G_ATM)
+
+// Market Structure
+swingSize    = input.int(25,           "Swing Size",        minval=2, maxval=50, group=G_SMC)
+bosConfType  = input.string("Candle Close", "BOS Confirmation", options=["Candle Close","Wick"], group=G_SMC)
+showStructLbls = input.bool(true,      "Show Structure Labels",                                   group=G_SMC)
+showBOSlines   = input.bool(true,      "Show BOS Lines",                                          group=G_SMC)
+
+// RSI Momentum
+rsiLen          = input.int(14, "RSI Length",       minval=1, maxval=50, group=G_RSI)
+rsi_ema_len     = input.int(5,  "Momentum EMA",     minval=1, maxval=50, group=G_RSI)
+pmom            = input.int(50, "Positive Above",   minval=20, maxval=80, group=G_RSI)
+nmom            = input.int(50, "Negative Below",   minval=20, maxval=80, group=G_RSI)
+sustain_mom     = input.bool(true,  "Sustain Momentum", group=G_RSI)
+use_m5_confirm  = input.bool(true,  "M5 RSI Confirm",   group=G_RSI)
+
+// VWAP / Regime
+prd          = input.int(100,  "Swing Period",      minval=2,   group=G_VWAP)
+baseAPT      = input.float(20, "Adaptive Tracking", minval=1,   step=1, group=G_VWAP)
+useAdapt     = input.bool(false, "Adapt by ATR",                group=G_VWAP)
+volBias_vwap = input.float(10.0, "Volatility Bias", minval=0.1, step=0.1, group=G_VWAP)
+len_fib      = input.int(200,  "Fib Length",        minval=1,   group=G_VWAP)
+atrLen_fib   = input.int(14,   "Fib ATR Length",    minval=1,   group=G_VWAP)
+useATR_fib   = input.bool(true,"Fib Use ATR",                   group=G_VWAP)
+requireFibTrend = input.bool(false, "Require Fib Confirmation", group=G_VWAP)
+
+// Volume Profile
+vpEnabled    = input.bool(true, "Enable Volume Profile", group=G_VP)
+vpResolution = input.int(30,    "Resolution (bins)",     minval=5, group=G_VP)
+vpVAwidth    = input.int(70,    "Value Area %",          minval=1, maxval=100, group=G_VP)
+
+// Confidence Engine
+claw_mode        = input.string("Moderate", "Claw Mode",
+     options=["Conservative","Moderate","Aggressive","Custom"],
+     tooltip="Conservative=80%  Moderate=60%  Aggressive=40%  Custom=your threshold",
+     group=G_CONF)
+custom_threshold = input.int(60,  "Custom Threshold %", minval=0, maxval=100, group=G_CONF)
+mtf_weight       = input.float(1.5, "MTF Weight",       minval=0, maxval=3.0, step=0.25, group=G_CONF)
+struct_weight    = input.float(1.0, "Structure Weight",  minval=0, maxval=3.0, step=0.25, group=G_CONF)
+rsi_weight       = input.float(1.0, "RSI Weight",        minval=0, maxval=3.0, step=0.25, group=G_CONF)
+vwap_weight      = input.float(1.0, "VWAP Weight",       minval=0, maxval=3.0, step=0.25, group=G_CONF)
+fib_weight       = input.float(0.5, "Fib Weight",        minval=0, maxval=3.0, step=0.25, group=G_CONF)
+vp_weight_inp    = input.float(0.5, "VP Weight",         minval=0, maxval=3.0, step=0.25, group=G_CONF)
+
+// Vanilla Options Settings
+max_contracts    = input.int(3,   "Max Contracts (Scale-In Limit)", minval=1, maxval=5, group=G_VAN,
+     tooltip="Maximum vanilla option contracts to hold simultaneously in one direction")
+scalein_on_smart = input.bool(true, "Scale-In on Smart Signals",  group=G_VAN,
+     tooltip="Buy additional vanilla contract when Smart signal fires in trend direction")
+show_strike_line = input.bool(true, "Show Strike Price Line",     group=G_VAN)
+strike_offset_atr = input.float(0.0, "Strike Offset (ATR ×)",    minval=-2.0, maxval=2.0, step=0.1,
+     group=G_VAN, tooltip="0 = ATM. Positive = OTM for calls / ITM for puts. Use 0 for highest liquidity.")
+show_duration    = input.bool(true,  "Show Duration Label",       group=G_VAN)
+alert_on_regime  = input.bool(true,  "Alert on Regime Shift",     group=G_VAN)
+
+// Visuals
+bull_color  = input.color(#00ff00, "Bull / CALL Color", group=G_VIS)
+bear_color  = input.color(#ff0000, "Bear / PUT Color",  group=G_VIS)
+dashOn      = input.bool(true,     "Show Dashboard",    group=G_VIS)
+dashColor   = input.color(color.new(#1e222d, 10), "Panel Background", group=G_VIS)
+panelPos    = input.string("Top-Right", "Placement",
+     options=["Top-Right","Top-Left","Bottom-Right","Bottom-Left"], group=G_VIS)
+
+// ============================================================================
+// SECTION 2 — CORE TRAIL ENGINE (Direction Truth)
+// ============================================================================
+calcLiqTrail(int mlen, int alen, float amult) =>
+    float t_atr   = ta.atr(alen)
+    float t_ma    = ta.ema(close, mlen)
+    float raw_up  = t_ma - t_atr * amult
+    float raw_dn  = t_ma + t_atr * amult
+    var int   t_trend = 1
+    var float t_trail = na
+    if barstate.isfirst
+        t_trend := close > t_ma ? 1 : -1
+        t_trail := close > t_ma ? raw_up : raw_dn
+    else
+        int   prev_trend = nz(t_trend[1], 1)
+        float prev_trail = nz(t_trail[1], close)
+        if prev_trend == 1
+            t_trail := math.max(raw_up, prev_trail)
+            t_trend := close < t_trail ? -1 : 1
+            if close < t_trail
+                t_trail := raw_dn
+        else
+            t_trail := math.min(raw_dn, prev_trail)
+            t_trend := close > t_trail ? 1 : -1
+            if close > t_trail
+                t_trail := raw_up
+    [t_trend, t_trail]
+
+[ltf_trend, ltf_trail] = calcLiqTrail(ma_len, atr_len, atr_mult)
+[m15_trend, _m15_trail] = request.security(syminfo.tickerid, "15",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[h1_trend,  _h1_trail]  = request.security(syminfo.tickerid, "60",  calcLiqTrail(ma_len, atr_len, atr_mult))
+
+bool trail_call = ltf_trend == 1   // Trail bullish → CALL territory
+bool trail_put  = ltf_trend == -1  // Trail bearish → PUT territory
+bool flip_to_call = ltf_trend == 1  and ltf_trend[1] == -1  // Regime flip → now CALL
+bool flip_to_put  = ltf_trend == -1 and ltf_trend[1] == 1   // Regime flip → now PUT
+bool regime_shift = flip_to_call or flip_to_put
+
+// ============================================================================
+// SECTION 3 — ATM BOT (Primary Entry Trigger)
+// ============================================================================
+_atr_buy  = ta.atr(c_buy)
+_atr_sell = ta.atr(c_sell)
+_nloss_buy  = a_buy  * _atr_buy
+_nloss_sell = a_sell * _atr_sell
+
+var float trail_buy  = na
+var float trail_sell = na
+
+if na(trail_buy[1])
+    trail_buy := close - _nloss_buy
+else
+    if close > trail_buy[1] and close[1] > trail_buy[1]
+        trail_buy := math.max(trail_buy[1], close - _nloss_buy)
+    else if close < trail_buy[1] and close[1] < trail_buy[1]
+        trail_buy := math.min(trail_buy[1], close + _nloss_buy)
+    else
+        trail_buy := close > trail_buy[1] ? close - _nloss_buy : close + _nloss_buy
+
+if na(trail_sell[1])
+    trail_sell := close + _nloss_sell
+else
+    if close > trail_sell[1] and close[1] > trail_sell[1]
+        trail_sell := math.max(trail_sell[1], close - _nloss_sell)
+    else if close < trail_sell[1] and close[1] < trail_sell[1]
+        trail_sell := math.min(trail_sell[1], close + _nloss_sell)
+    else
+        trail_sell := close > trail_sell[1] ? close - _nloss_sell : close + _nloss_sell
+
+bool ATM_buy_raw  = close > trail_buy  and ta.crossover(close, trail_buy)  and barstate.isconfirmed
+bool ATM_sell_raw = close < trail_sell and ta.crossover(trail_sell, close)  and barstate.isconfirmed
+
+// ============================================================================
+// SECTION 4 — RSI MOMENTUM (Smart Signal source)
+// ============================================================================
+rsi        = ta.rsi(close, rsiLen)
+ema5_close = ta.ema(close, rsi_ema_len)
+chg_ema5   = ta.change(ema5_close)
+
+var bool positive = false
+var bool negative = false
+p_mom = rsi[1] < pmom and rsi > pmom and rsi > nmom and chg_ema5 > 0
+n_mom = rsi  < nmom  and chg_ema5 < 0
+p_sust = sustain_mom and positive[1] and rsi > pmom and chg_ema5 > 0
+n_sust = sustain_mom and negative[1] and rsi < nmom and chg_ema5 < 0
+if p_mom or p_sust
+    positive := true
+    negative := false
+if n_mom or n_sust
+    positive := false
+    negative := true
+
+rsi_m5  = request.security(syminfo.tickerid, "5", ta.rsi(close, rsiLen))
+ema_m5  = request.security(syminfo.tickerid, "5", ta.ema(close, rsi_ema_len))
+m5_bull = ta.change(ema_m5) > 0
+m5_bear = ta.change(ema_m5) < 0
+
+var bool pos_m5 = false
+var bool neg_m5 = false
+if rsi_m5[1] < pmom and rsi_m5 > pmom and rsi_m5 > nmom and m5_bull
+    pos_m5 := true
+    neg_m5 := false
+if rsi_m5 < nmom and m5_bear
+    pos_m5 := false
+    neg_m5 := true
+
+smartBull    = rsi > pmom and chg_ema5 > 0 and (not use_m5_confirm or (rsi_m5 > pmom and m5_bull))
+smartBear    = rsi < nmom and chg_ema5 < 0 and (not use_m5_confirm or (rsi_m5 < nmom and m5_bear))
+newSmartBull = smartBull and not smartBull[1] and barstate.isconfirmed
+newSmartBear = smartBear and not smartBear[1] and barstate.isconfirmed
+
+// ============================================================================
+// SECTION 5 — MARKET STRUCTURE (SMC)
+// ============================================================================
+pivHi = ta.pivothigh(high, swingSize, swingSize)
+pivLo = ta.pivotlow(low,   swingSize, swingSize)
+
+var float prevHigh     = na
+var float prevLow      = na
+var int prevHighIndex  = na
+var int prevLowIndex   = na
+var bool highActive    = false
+var bool lowActive     = false
+var int  structBias    = 0
+
+bool hh = false
+bool lh = false
+bool hl = false
+bool ll = false
+
+if not na(pivHi)
+    if na(prevHigh) or pivHi >= prevHigh
+        hh := true;  structBias := 1
+    else
+        lh := true;  structBias := -1
+    prevHigh := pivHi; highActive := true; prevHighIndex := bar_index - swingSize
+
+if not na(pivLo)
+    if na(prevLow) or pivLo >= prevLow
+        hl := true
+        if structBias != -1
+            structBias := 1
+    else
+        ll := true; structBias := -1
+    prevLow := pivLo; lowActive := true; prevLowIndex := bar_index - swingSize
+
+float highSrc = bosConfType == "Candle Close" ? close : high
+float lowSrc  = bosConfType == "Candle Close" ? close : low
+bool  highBroken = false
+bool  lowBroken  = false
+if highSrc > prevHigh and highActive
+    highBroken := true; highActive := false
+if lowSrc < prevLow and lowActive
+    lowBroken := true;  lowActive  := false
+
+bool bullBOS = highBroken and structBias == 1
+bool bearBOS = lowBroken  and structBias == -1
+
+if showStructLbls
+    if hh
+        label.new(bar_index - swingSize, pivHi, "HH", style=label.style_label_down, color=color.new(bull_color,30), textcolor=color.white, size=size.tiny)
+    if lh
+        label.new(bar_index - swingSize, pivHi, "LH", style=label.style_label_down, color=color.new(bear_color,30), textcolor=color.white, size=size.tiny)
+    if hl
+        label.new(bar_index - swingSize, pivLo, "HL", style=label.style_label_up,   color=color.new(bull_color,30), textcolor=color.white, size=size.tiny)
+    if ll
+        label.new(bar_index - swingSize, pivLo, "LL", style=label.style_label_up,   color=color.new(bear_color,30), textcolor=color.white, size=size.tiny)
+
+if showBOSlines
+    if bullBOS and not na(prevHighIndex)
+        line.new(prevHighIndex, prevHigh, bar_index, prevHigh, color=color.new(bull_color,20), width=2)
+    if bearBOS and not na(prevLowIndex)
+        line.new(prevLowIndex, prevLow, bar_index, prevLow,   color=color.new(bear_color,20), width=2)
+
+// ============================================================================
+// SECTION 6 — VWAP ANCHOR
+// ============================================================================
+var float vw_ph  = na
+var float vw_pl  = na
+var int   vw_phL = bar_index
+var int   vw_plL = bar_index
+var int   lastSwing = 0
+vw_ph  := ta.highestbars(high, prd) == 0 ? high : vw_ph
+vw_pl  := ta.lowestbars(low, prd)  == 0 ? low  : vw_pl
+vw_phL := ta.highestbars(high, prd) == 0 ? bar_index : vw_phL
+vw_plL := ta.lowestbars(low, prd)  == 0 ? bar_index : vw_plL
+dir_vwap = vw_phL > vw_plL ? 1 : -1
+
+atr_vwap  = ta.atr(50)
+atrAvg    = ta.rma(atr_vwap, 50)
+ratio_vwap = atrAvg > 0 ? atr_vwap / atrAvg : 1.0
+aptRaw    = useAdapt ? baseAPT / math.pow(ratio_vwap, volBias_vwap) : baseAPT
+aptClamped = math.max(5.0, math.min(300.0, aptRaw))
+aptSeries = math.round(aptClamped)
+
+alphaFromAPT(int apt) =>
+    1.0 - math.exp(-math.log(2.0) / math.max(1.0, float(apt)))
+
+var float p_vwap   = hlc3 * volume
+var float vol_vwap = volume
+
+type VwapData
+    array<chart.point> pts
+    polyline           poly = na
+
+var VwapData vd = VwapData.new(array.new<chart.point>())
+
+_vwap_col = dir_vwap > 0 ? color.new(bull_color, 40) : color.new(bear_color, 40)
+
+if dir_vwap != dir_vwap[1]
+    x_s  = dir_vwap > 0 ? vw_plL : vw_phL
+    y_s  = dir_vwap > 0 ? vw_pl  : vw_ph
+    lastSwing := dir_vwap > 0 ? 1 : -1
+    barsback = bar_index - x_s
+    p_vwap   := y_s * volume[barsback]
+    vol_vwap := volume[barsback]
+    vd.poly.delete()
+    polyline.new(vd.pts, false, false, line_color=_vwap_col, line_width=1)
+    vd.pts.clear()
+    for i = barsback to 0 by 1
+        alpha_i = alphaFromAPT(aptSeries[i])
+        p_vwap   := (1.0 - alpha_i) * p_vwap   + alpha_i * (hlc3[i] * volume[i])
+        vol_vwap := (1.0 - alpha_i) * vol_vwap  + alpha_i * volume[i]
+        vappe = vol_vwap > 0 ? p_vwap / vol_vwap : na
+        vd.pts.push(chart.point.from_index(bar_index - i, vappe))
+    vd.poly := polyline.new(vd.pts, false, false, line_color=_vwap_col, line_width=1)
+else
+    alpha_0 = alphaFromAPT(aptSeries)
+    p_vwap   := (1.0 - alpha_0) * p_vwap   + alpha_0 * (hlc3 * volume)
+    vol_vwap := (1.0 - alpha_0) * vol_vwap  + alpha_0 * volume
+    vap = vol_vwap > 0 ? p_vwap / vol_vwap : na
+    vd.poly.delete()
+    vd.pts.push(chart.point.from_index(bar_index, vap))
+    vd.poly := polyline.new(vd.pts, false, false, line_color=_vwap_col, line_width=1)
+
+bool vwapBullish = lastSwing == 1
+bool vwapBearish = lastSwing == -1
+
+// ============================================================================
+// SECTION 7 — FIB BANDS
+// ============================================================================
+basis_fib  = ta.ema(ta.ema(hlc3, len_fib), len_fib)
+vol_fib    = useATR_fib ? ta.atr(atrLen_fib) : ta.stdev(hlc3, len_fib)
+var int trend_fib = 0
+trend_fib := basis_fib > basis_fib[1] ? 1 : basis_fib < basis_fib[1] ? -1 : nz(trend_fib[1])
+bool fibBullish = trend_fib == 1
+bool fibBearish = trend_fib == -1
+
+// Fib bands (visual only when in bear/bull)
+u1_v = trend_fib == -1 ? basis_fib + vol_fib * 0.618 : na
+u4_v = trend_fib == -1 ? basis_fib + vol_fib * 2.618 : na
+l1_v = trend_fib == 1  ? basis_fib - vol_fib * 0.618 : na
+l4_v = trend_fib == 1  ? basis_fib - vol_fib * 2.618 : na
+u1 = plot(u1_v, display=display.none)
+u4 = plot(u4_v, display=display.none)
+l1 = plot(l1_v, display=display.none)
+l4 = plot(l4_v, display=display.none)
+fill(u1, u4, color=color.new(color.red, 88))
+fill(l1, l4, color=color.new(color.green, 88))
+
+// ============================================================================
+// SECTION 8 — VOLUME PROFILE (POC / VAH / VAL for confluence)
+// ============================================================================
+var int   vp_zoneStart = 0
+var bool  vp_active    = false
+var array<float> vp_green = array.new<float>(vpResolution, 0.0)
+var array<float> vp_red   = array.new<float>(vpResolution, 0.0)
+var array<float> vp_bounds = array.new<float>(vpResolution, 0.0)
+var array<float> vp_ltfO = array.new<float>(0)
+var array<float> vp_ltfH = array.new<float>(0)
+var array<float> vp_ltfL = array.new<float>(0)
+var array<float> vp_ltfC = array.new<float>(0)
+var array<float> vp_ltfV = array.new<float>(0)
+
+[vp_dO, vp_dC, vp_dH, vp_dL, vp_dV] = request.security_lower_tf(syminfo.tickerid, '', [open, close, high, low, volume])
+
+vp_lookback = bar_index - vp_zoneStart
+vp_profHigh = ta.highest(high, vp_lookback + 1)[1]
+vp_profLow  = ta.lowest(low,  vp_lookback + 1)[1]
+
+vp_get_vol(float y11, float y12, float y21, float y22, float h, float v) =>
+    nz(math.max(math.min(math.max(y11,y12), math.max(y21,y22)) - math.max(math.min(y11,y12), math.min(y21,y22)), 0) * v / h)
+
+vp_addBar(float o, float h, float l, float c, float v, float gap) =>
+    for i = 0 to array.size(vp_green) - 1
+        zt = array.get(vp_bounds, i)
+        zb = zt - gap
+        bt = math.max(c, o);  bb = math.min(c, o)
+        body = bt - bb; tw = h - bt; bw = bb - l
+        denom = 2*tw + 2*bw + body
+        denom := denom > 0 ? denom : 1.0
+        bvol = body * v / denom; tvol = 2*tw * v / denom; btvol = 2*bw * v / denom
+        bull_add = (c >= o ? vp_get_vol(zb,zt,bb,bt,body,bvol) : 0.0) + vp_get_vol(zb,zt,bt,h,tw,tvol)/2 + vp_get_vol(zb,zt,bb,l,bw,btvol)/2
+        bear_add = (c <  o ? vp_get_vol(zb,zt,bb,bt,body,bvol) : 0.0) + vp_get_vol(zb,zt,bt,h,tw,tvol)/2 + vp_get_vol(zb,zt,bb,l,bw,btvol)/2
+        array.set(vp_green, i, array.get(vp_green, i) + bull_add)
+        array.set(vp_red,   i, array.get(vp_red,   i) + bear_add)
+
+vp_newDay = dayofweek != dayofweek[1]
+if vpEnabled
+    if vp_newDay
+        array.fill(vp_green, 0.0); array.fill(vp_red, 0.0)
+        array.clear(vp_ltfO); array.clear(vp_ltfH)
+        array.clear(vp_ltfL); array.clear(vp_ltfC); array.clear(vp_ltfV)
+        vp_zoneStart := bar_index; vp_active := true
+    if array.size(vp_dO) > 0
+        for i = 0 to array.size(vp_dO) - 1
+            array.push(vp_ltfO, array.get(vp_dO, i)); array.push(vp_ltfH, array.get(vp_dH, i))
+            array.push(vp_ltfL, array.get(vp_dL, i)); array.push(vp_ltfC, array.get(vp_dC, i))
+            array.push(vp_ltfV, array.get(vp_dV, i))
+    if barstate.islast and vp_active and vp_profHigh > vp_profLow
+        gap = (vp_profHigh - vp_profLow) / vpResolution
+        for i = 0 to vpResolution - 1
+            array.set(vp_bounds, i, vp_profHigh - gap * i)
+        array.fill(vp_green, 0.0); array.fill(vp_red, 0.0)
+        if array.size(vp_ltfO) > 0
+            for j = 0 to array.size(vp_ltfO) - 1
+                vp_addBar(array.get(vp_ltfO,j), array.get(vp_ltfH,j), array.get(vp_ltfL,j),
+                          array.get(vp_ltfC,j), array.get(vp_ltfV,j), gap)
+
+vp_poc_price() =>
+    float mx = 0; int idx = 0
+    for i = 0 to array.size(vp_green) - 1
+        tot = array.get(vp_green, i) + array.get(vp_red, i)
+        if tot > mx
+            mx := tot; idx := i
+    float out = na
+    if idx < array.size(vp_bounds) - 1
+        out := array.get(vp_bounds, idx) - (array.get(vp_bounds, idx) - array.get(vp_bounds, idx+1)) / 2
+    out
+
+vp_poc_val = vpEnabled ? vp_poc_price() : na
+
+// VAH/VAL approximation for confluence
+float vp_vah_approx = vpEnabled and not na(vp_poc_val) ? vp_profHigh * 0.98 : na
+float vp_val_approx = vpEnabled and not na(vp_poc_val) ? vp_profLow  * 1.02 : na
+bool vp_bull_conf   = vpEnabled and not na(vp_val_approx) and close > vp_val_approx
+bool vp_bear_conf   = vpEnabled and not na(vp_vah_approx) and close < vp_vah_approx
+
+// ============================================================================
+// SECTION 9 — CONFIDENCE ENGINE
+// ============================================================================
+bool mtf_bull_full    = m15_trend == 1  and h1_trend == 1
+bool mtf_bear_full    = m15_trend == -1 and h1_trend == -1
+bool mtf_bull_partial = m15_trend == 1  or  h1_trend == 1
+bool mtf_bear_partial = m15_trend == -1 or  h1_trend == -1
+
+float bull_score = 0.0; float bull_max = 0.0
+float bear_score = 0.0; float bear_max = 0.0
+
+// MTF
+bull_score += mtf_bull_full ? mtf_weight : mtf_bull_partial ? mtf_weight * 0.4 : 0.0; bull_max += mtf_weight
+bear_score += mtf_bear_full ? mtf_weight : mtf_bear_partial ? mtf_weight * 0.4 : 0.0; bear_max += mtf_weight
+// Structure
+bull_score += structBias == 1  ? struct_weight : 0.0; bull_max += struct_weight
+bear_score += structBias == -1 ? struct_weight : 0.0; bear_max += struct_weight
+// RSI
+bull_score += positive ? rsi_weight : 0.0; bull_max += rsi_weight
+bear_score += negative ? rsi_weight : 0.0; bear_max += rsi_weight
+// VWAP
+bull_score += vwapBullish ? vwap_weight : 0.0; bull_max += vwap_weight
+bear_score += vwapBearish ? vwap_weight : 0.0; bear_max += vwap_weight
+// Fib (optional)
+if requireFibTrend
+    bull_score += fibBullish ? fib_weight : 0.0; bull_max += fib_weight
+    bear_score += fibBearish ? fib_weight : 0.0; bear_max += fib_weight
+// Volume Profile
+if vpEnabled
+    bull_score += vp_bull_conf ? vp_weight_inp : 0.0; bull_max += vp_weight_inp
+    bear_score += vp_bear_conf ? vp_weight_inp : 0.0; bear_max += vp_weight_inp
+
+float bull_conf = bull_max > 0 ? (bull_score / bull_max) * 100.0 : 0.0
+float bear_conf = bear_max > 0 ? (bear_score / bear_max) * 100.0 : 0.0
+
+int conf_thresh = switch claw_mode
+    "Conservative" => 80
+    "Moderate"     => 60
+    "Aggressive"   => 40
+    "Custom"       => custom_threshold
+    => 60
+
+bool conf_pass_bull = bull_conf >= conf_thresh
+bool conf_pass_bear = bear_conf >= conf_thresh
+
+// ============================================================================
+// SECTION 10 — VANILLA OPTIONS SIGNAL GENERATION
+// ============================================================================
+// Primary entries (ATM Bot + Trail + Confidence)
+bool gated_call_entry = ATM_buy_raw  and trail_call and conf_pass_bull
+bool gated_put_entry  = ATM_sell_raw and trail_put  and conf_pass_bear
+
+// Scale-in entries (Smart Signal + Trail + Confidence)
+bool gated_call_scalein = scalein_on_smart and newSmartBull and trail_call and conf_pass_bull
+bool gated_put_scalein  = scalein_on_smart and newSmartBear and trail_put  and conf_pass_bear
+
+// Regime shift exit signals
+bool call_regime_exit = flip_to_put  and alert_on_regime  // Was CALL → now bearish
+bool put_regime_exit  = flip_to_call and alert_on_regime  // Was PUT  → now bullish
+
+// ─── Contract State Tracker ──────────────────────────────────────────────────
+// Tracks how many contracts are conceptually open in current direction.
+// Resets on regime shift. Caps at max_contracts input.
+var int open_calls = 0
+var int open_puts  = 0
+
+if gated_call_entry and open_calls == 0
+    open_calls := 1
+    open_puts  := 0
+else if gated_call_scalein and open_calls > 0 and open_calls < max_contracts
+    open_calls := open_calls + 1
+if gated_put_entry and open_puts == 0
+    open_puts  := 1
+    open_calls := 0
+else if gated_put_scalein and open_puts > 0 and open_puts < max_contracts
+    open_puts := open_puts + 1
+if regime_shift
+    open_calls := 0
+    open_puts  := 0
+
+bool in_calls = open_calls > 0
+bool in_puts  = open_puts  > 0
+
+// ─── Strike Price Suggestion (ATM ± offset) ──────────────────────────────────
+float atr_now    = ta.atr(atr_len)
+float strike_now = close + strike_offset_atr * atr_now * (trail_call ? -1 : 1)
+// Round to nearest tick
+strike_now := math.round(strike_now / syminfo.mintick) * syminfo.mintick
+
+// ─── Duration Suggestion per Timeframe ───────────────────────────────────────
+// Deriv vanilla options: 1 min to 365 days
+// Rule: aim for 3-5 bars of contract life to let the move develop
+_tf_secs = timeframe.in_seconds()
+string duration_suggestion =
+     _tf_secs <= 30   ? "1 - 5 min"  :
+     _tf_secs <= 60   ? "5 - 15 min" :
+     _tf_secs <= 300  ? "15 - 60 min":
+     _tf_secs <= 900  ? "1 - 4 hr"   :
+     _tf_secs <= 3600 ? "4 - 24 hr"  :
+     _tf_secs <= 14400 ? "1 - 7 days" : "7 - 30 days"
+
+// ─── Signal Type Labels ───────────────────────────────────────────────────────
+string call_signal_type  = gated_call_entry   ? "PRIMARY"  : gated_call_scalein ? "SCALE-IN" : ""
+string put_signal_type   = gated_put_entry    ? "PRIMARY"  : gated_put_scalein  ? "SCALE-IN" : ""
+
+// ============================================================================
+// SECTION 11 — VISUAL OUTPUTS
+// ============================================================================
+color trend_col = ltf_trend == 1 ? bull_color : bear_color
+
+// Trail cloud
+p_trail = plot(ltf_trend != ltf_trend[1] ? na : ltf_trail, "Trail",
+     color=trend_col, linewidth=2, style=plot.style_linebr)
+p_ma    = plot(ta.ema(close, ma_len), "MA",
+     color=color.new(trend_col, 100), linewidth=1)
+fill(p_trail, p_ma, ltf_trail, ta.ema(close, ma_len),
+     color.new(trend_col, 85), color.new(trend_col, 96), "Trend Cloud")
+
+// Regime flip diamonds
+plotshape(flip_to_call ? ltf_trail : na, "CALL Start", shape.diamond,
+     location.absolute, color.new(bull_color, 30), size=size.small)
+plotshape(flip_to_put  ? ltf_trail : na, "PUT Start",  shape.diamond,
+     location.absolute, color.new(bear_color, 30), size=size.small)
+
+// ─── CALL Entry Signals ───────────────────────────────────────────────────────
+plotshape(gated_call_entry,
+     title="CALL — Primary Entry",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=bull_color,
+     textcolor=color.white,
+     size=size.normal,
+     text="CALL\n⚡ PRIMARY")
+
+plotshape(gated_call_scalein,
+     title="CALL — Scale-In",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.new(bull_color, 35),
+     textcolor=color.white,
+     size=size.small,
+     text="CALL\n+ ADD")
+
+// ─── PUT Entry Signals ────────────────────────────────────────────────────────
+plotshape(gated_put_entry,
+     title="PUT — Primary Entry",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=bear_color,
+     textcolor=color.white,
+     size=size.normal,
+     text="PUT\n⚡ PRIMARY")
+
+plotshape(gated_put_scalein,
+     title="PUT — Scale-In",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.new(bear_color, 35),
+     textcolor=color.white,
+     size=size.small,
+     text="PUT\n+ ADD")
+
+// ─── Regime Shift Exit Signals ────────────────────────────────────────────────
+plotshape(call_regime_exit,
+     title="CALL Exit — Regime Shift",
+     style=shape.xcross,
+     location=location.belowbar,
+     color=color.orange,
+     size=size.normal,
+     text="EXIT\nCALLs")
+
+plotshape(put_regime_exit,
+     title="PUT Exit — Regime Shift",
+     style=shape.xcross,
+     location=location.abovebar,
+     color=color.orange,
+     size=size.normal,
+     text="EXIT\nPUTs")
+
+// ─── Strike Price Line (at ATM) ───────────────────────────────────────────────
+var line strike_line = na
+var label strike_lbl = na
+if show_strike_line and (gated_call_entry or gated_put_entry)
+    line.delete(strike_line)
+    label.delete(strike_lbl)
+    _sl_col = gated_call_entry ? bull_color : bear_color
+    strike_line := line.new(bar_index, strike_now, bar_index + 30, strike_now,
+         color=color.new(_sl_col, 50), style=line.style_dashed, width=1)
+    _lbl_text = (gated_call_entry ? "CALL" : "PUT") + " STRIKE: " + str.tostring(strike_now, "#.####")
+    strike_lbl := label.new(bar_index + 30, strike_now, _lbl_text,
+         style=label.style_label_left, color=color.new(_sl_col, 60),
+         textcolor=color.white, size=size.small)
+
+// ─── Duration Label on signal bars ───────────────────────────────────────────
+if show_duration and (gated_call_entry or gated_put_entry)
+    _dir  = gated_call_entry ? "CALL" : "PUT"
+    _col  = gated_call_entry ? bull_color : bear_color
+    _yloc = gated_call_entry ? low - atr_now * 2.0 : high + atr_now * 2.0
+    _sty  = gated_call_entry ? label.style_label_up : label.style_label_down
+    label.new(bar_index, _yloc,
+         "⏱ " + duration_suggestion,
+         style=_sty, color=color.new(_col, 70),
+         textcolor=color.white, size=size.tiny)
+
+// Bar coloring: green tint for active CALL leg, red tint for active PUT leg
+barcolor(in_calls ? color.new(bull_color, 80) : in_puts ? color.new(bear_color, 80) : na)
+
+// ─── RSI Background ───────────────────────────────────────────────────────────
+bgcolor(positive ? color.new(color.green, 95) : negative ? color.new(color.red, 95) : na,
+     title="RSI Regime Background")
+
+// ============================================================================
+// SECTION 12 — VANILLA OPTIONS DASHBOARD
+// ============================================================================
+if dashOn and barstate.islast
+    string contract_type   = in_calls ? "  CALL  " : in_puts ? "  PUT   " : "  FLAT  "
+    color  ct_color        = in_calls ? bull_color  : in_puts ? bear_color  : color.gray
+    string direction_label = trail_call ? "BULLISH ▲" : "BEARISH ▼"
+    color  dir_color       = trail_call ? bull_color  : bear_color
+    string conf_pct        = trail_call ? str.tostring(math.round(bull_conf)) + "%" :
+                                          str.tostring(math.round(bear_conf)) + "%"
+    string regime_status   = regime_shift ? "⚠ REGIME SHIFT — EXIT NOW" :
+                             (trail_call  ? "✅ TRENDING — HOLD CALLS"   :
+                              trail_put   ? "✅ TRENDING — HOLD PUTS"    : "FLAT")
+    color  regime_col      = regime_shift ? color.orange : (trail_call or trail_put ? color.lime : color.gray)
+    string contracts_str   = in_calls ? str.tostring(open_calls) + " / " + str.tostring(max_contracts) + " CALL" :
+                             in_puts  ? str.tostring(open_puts)  + " / " + str.tostring(max_contracts) + " PUT"  : "0 — FLAT"
+    string strike_str      = (in_calls or in_puts) ? str.tostring(strike_now, "#.#####") : "—"
+    string mtf_str         = mtf_bull_full ? "H1+M15 BULL" : mtf_bear_full ? "H1+M15 BEAR" :
+                             mtf_bull_partial ? "PARTIAL BULL" : mtf_bear_partial ? "PARTIAL BEAR" : "MIXED"
+    string struct_str      = structBias == 1 ? "HH/HL ▲" : structBias == -1 ? "LH/LL ▼" : "NEUTRAL"
+    string rsi_str         = positive ? "POSITIVE ▲" : negative ? "NEGATIVE ▼" : "NEUTRAL"
+    string vwap_str        = vwapBullish ? "BULL" : vwapBearish ? "BEAR" : "—"
+    string next_action     = gated_call_entry   ? "⚡ BUY CALL — PRIMARY" :
+                             gated_put_entry    ? "⚡ BUY PUT  — PRIMARY" :
+                             gated_call_scalein ? "+ ADD CALL — SCALE-IN" :
+                             gated_put_scalein  ? "+ ADD PUT  — SCALE-IN" :
+                             regime_shift       ? "⚠  EXIT — REGIME FLIP" :
+                             conf_pass_bull     ? "WAIT FOR ATM TRIGGER (CALL)" :
+                             conf_pass_bear     ? "WAIT FOR ATM TRIGGER (PUT)"  : "WAIT FOR CONFLUENCE"
+
+    var table dash = table.new(
+         position  = panelPos == "Top-Right"     ? position.top_right     :
+                     panelPos == "Top-Left"      ? position.top_left      :
+                     panelPos == "Bottom-Right"  ? position.bottom_right  : position.bottom_left,
+         columns   = 2, rows = 16,
+         bgcolor   = dashColor,
+         border_color = color.new(color.white, 70),
+         border_width = 1,
+         frame_color  = color.new(color.white, 50),
+         frame_width  = 1)
+
+    _hd(string txt) =>
+        table.cell(dash, 0, 0, txt, text_color=color.white, text_size=size.small, bgcolor=color.new(#1e222d, 0), text_halign=text.align_center)
+        table.merge_cells(dash, 0, 0, 1, 0)
+
+    _row(int r, string lbl, string val, color vc) =>
+        table.cell(dash, 0, r, lbl, text_color=color.new(color.white, 20), text_size=size.tiny,  bgcolor=color.new(#1e222d, 30), text_halign=text.align_right)
+        table.cell(dash, 1, r, val, text_color=vc,                          text_size=size.small, bgcolor=color.new(#1e222d, 10), text_halign=text.align_left)
+
+    table.cell(dash, 0, 0, "VANILLA AGENT — DERIV OPTIONS", text_color=color.white, text_size=size.small,
+         bgcolor=color.new(#1e222d, 0), text_halign=text.align_center)
+    table.merge_cells(dash, 0, 0, 1, 0)
+
+    _row(1,  "CONTRACT",  contract_type,    ct_color)
+    _row(2,  "DIRECTION", direction_label,  dir_color)
+    _row(3,  "CONTRACTS", contracts_str,    ct_color)
+    _row(4,  "STRIKE",    strike_str,       color.white)
+    _row(5,  "DURATION",  duration_suggestion, color.aqua)
+    _row(6,  "REGIME",    regime_status,    regime_col)
+    _row(7,  "CONFIDENCE",conf_pct + "  (need " + str.tostring(conf_thresh) + "%)", bull_conf >= conf_thresh or bear_conf >= conf_thresh ? color.lime : color.orange)
+    _row(8,  "── LAYERS", "──────────────",color.new(color.white, 60))
+    _row(9,  "MTF",       mtf_str,          mtf_bull_full or mtf_bear_full ? color.lime : color.orange)
+    _row(10, "STRUCTURE", struct_str,       structBias == ltf_trend ? color.lime : color.orange)
+    _row(11, "RSI",       rsi_str,          positive or negative ? color.lime : color.orange)
+    _row(12, "VWAP",      vwap_str,         vwapBullish or vwapBearish ? color.lime : color.orange)
+    _row(13, "FIB",       requireFibTrend ? (fibBullish ? "BULL ✓" : fibBearish ? "BEAR ✓" : "WAIT") : "OFF", color.new(color.white, 30))
+    _row(14, "VOL PROF",  vpEnabled ? (vp_bull_conf ? ">VAL ✓" : vp_bear_conf ? "<VAH ✓" : "IN VALUE") : "OFF", color.new(color.white, 30))
+    _row(15, "ACTION",    next_action, next_action == "⚡ BUY CALL — PRIMARY" or next_action == "⚡ BUY PUT  — PRIMARY" ? color.white :
+                          next_action == "+ ADD CALL — SCALE-IN" or next_action == "+ ADD PUT  — SCALE-IN" ? color.lime :
+                          next_action == "⚠  EXIT — REGIME FLIP" ? color.orange : color.new(color.white, 50))
+
+// ============================================================================
+// SECTION 13 — ALERTS
+// ============================================================================
+alertcondition(gated_call_entry,
+     title="CALL — Primary Entry",
+     message="VANILLA AGENT | BUY CALL ⚡ | {{ticker}} | Strike: ATM | Duration: {{interval}} chart | Confidence: PASSED | PRIMARY ENTRY — Trail BULLISH + ATM Bot")
+
+alertcondition(gated_put_entry,
+     title="PUT — Primary Entry",
+     message="VANILLA AGENT | BUY PUT ⚡ | {{ticker}} | Strike: ATM | Duration: {{interval}} chart | Confidence: PASSED | PRIMARY ENTRY — Trail BEARISH + ATM Bot")
+
+alertcondition(gated_call_scalein,
+     title="CALL — Scale-In",
+     message="VANILLA AGENT | ADD CALL + | {{ticker}} | SCALE-IN — Smart Bull signal, Trail BULLISH, Confidence PASSED")
+
+alertcondition(gated_put_scalein,
+     title="PUT — Scale-In",
+     message="VANILLA AGENT | ADD PUT + | {{ticker}} | SCALE-IN — Smart Bear signal, Trail BEARISH, Confidence PASSED")
+
+alertcondition(call_regime_exit,
+     title="CALL — Regime Shift EXIT",
+     message="VANILLA AGENT | EXIT CALLS ⚠ | {{ticker}} | REGIME SHIFT — Trail flipped BEARISH. Stop buying CALLs. Consider early exit.")
+
+alertcondition(put_regime_exit,
+     title="PUT — Regime Shift EXIT",
+     message="VANILLA AGENT | EXIT PUTS ⚠ | {{ticker}} | REGIME SHIFT — Trail flipped BULLISH. Stop buying PUTs. Consider early exit.")
+
+alertcondition(gated_call_entry or gated_put_entry or gated_call_scalein or gated_put_scalein or call_regime_exit or put_regime_exit,
+     title="ALL Vanilla Signals",
+     message="VANILLA AGENT | {{ticker}} | Signal fired — check chart for CALL/PUT/SCALE-IN/EXIT")

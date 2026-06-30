@@ -581,7 +581,7 @@ void CalcVolumeProfile(const datetime &time[], const double &high[], const doubl
 }
 
 //+------------------------------------------------------------------+
-//| DASHBOARD — Comment() panel matching Pine dashboard rows        |
+//| DASHBOARD — VANILLA AGENT | DERIV OPTIONS PROTOCOL             |
 //+------------------------------------------------------------------+
 void DrawDashboard(int ltf_trend, double conf_long, double conf_short,
                    int conf_thresh, int h1_trend, int m15_trend, int str_bias,
@@ -596,49 +596,67 @@ void DrawDashboard(int ltf_trend, double conf_long, double conf_short,
                    bool trail_ok_l, bool trail_ok_s,
                    bool pass_l, bool pass_s, int pos_state)
 {
-    string bias   = ltf_trend ==  1 ? "BULLISH" : ltf_trend == -1 ? "BEARISH" : "NEUTRAL";
-    string action = pos_state ==  1 ? "IN LONG" : pos_state == -1 ? "IN SHORT" : "FLAT";
-    double conf   = ltf_trend ==  1 ? conf_long : ltf_trend == -1 ? conf_short : 0;
+    // ── Vanilla Options framing ─────────────────────────────────────
+    string contract    = ltf_trend == 1 ? "CALL" : ltf_trend == -1 ? "PUT" : "FLAT";
+    string direction   = ltf_trend == 1 ? "BULLISH  (Trail ▲)" : ltf_trend == -1 ? "BEARISH  (Trail ▼)" : "NEUTRAL";
+    double conf_active = ltf_trend == 1 ? conf_long : ltf_trend == -1 ? conf_short : 0;
+    string contracts_s = pos_state ==  1 ? "IN CALLS" : pos_state == -1 ? "IN PUTS" : "FLAT — NO POSITION";
+
+    // ── Signal type ─────────────────────────────────────────────────
+    string entry_s;
+    if(final_long)        entry_s = t_atm_b ? "BUY CALL  ⚡ PRIMARY" : "BUY CALL  + SCALE-IN";
+    else if(final_short)  entry_s = t_atm_s ? "BUY PUT   ⚡ PRIMARY" : "BUY PUT   + SCALE-IN";
+    else if(pass_l)       entry_s = "CONF OK — WAIT ATM TRIGGER (CALL)";
+    else if(pass_s)       entry_s = "CONF OK — WAIT ATM TRIGGER (PUT)";
+    else                  entry_s = "WAIT — BUILDING CONFLUENCE";
+
+    // ── Regime shift warning ─────────────────────────────────────────
+    bool prev_call_active = (pos_state == 1);
+    bool prev_put_active  = (pos_state == -1);
+    bool regime_flip_now  = (ltf_trend == 1 && prev_put_active) || (ltf_trend == -1 && prev_call_active);
+    string regime_s = regime_flip_now ? "!! REGIME SHIFT — EXIT / STOP BUYING !!"
+                    : (ltf_trend ==  1 ? "TRENDING BULLISH — HOLD CALLS"
+                    : (ltf_trend == -1 ? "TRENDING BEARISH — HOLD PUTS"  : "FLAT — WAIT TRAIL"));
+
+    // ── MTF / layers ─────────────────────────────────────────────────
     string h1s    = h1_trend  ==  1 ? "BULL" : h1_trend  == -1 ? "BEAR" : "NEUT";
     string m15s   = m15_trend ==  1 ? "BULL" : m15_trend == -1 ? "BEAR" : "NEUT";
-    string strs   = str_bias  ==  1 ? "BULL" : str_bias  == -1 ? "BEAR" : "NEUT";
-    string bos_s  = bull_bos ? "BOS+" : bear_bos ? "BOS-" : "--";
-    string h1_ok  = (h1_trend  == ltf_trend) ? "OK" : "!!";
-    string m15_ok = (m15_trend == ltf_trend) ? "OK" : "!!";
-    string str_ok = (str_bias  == ltf_trend) ? "OK" : "!!";
-    string mtf_ls = mtf_fb ? "FULL" : mtf_pb ? "PARTIAL" : "FAIL";
-    string mtf_ss = mtf_fs ? "FULL" : mtf_ps ? "PARTIAL" : "FAIL";
-    string vp_pos = (vp_vah > 0 && close_p > vp_vah) ? "ABOVE VAH"
+    string strs   = str_bias  ==  1 ? "HH/HL▲" : str_bias == -1 ? "LH/LL▼" : "NEUT";
+    string mtf_ls = mtf_fb ? "H1+M15 BULL" : mtf_pb ? "PARTIAL BULL" : "BEARISH/MIXED";
+    string mtf_ss = mtf_fs ? "H1+M15 BEAR" : mtf_ps ? "PARTIAL BEAR" : "BULLISH/MIXED";
+    string vp_pos = (vp_vah > 0 && close_p > vp_vah) ? "ABOVE VAH ✓"
                   : (vp_val > 0 && close_p < vp_val)  ? "BELOW VAL" : "IN VALUE";
-    string wait_s, flip_s;
-    if(ltf_trend == 1)
-        wait_s = pass_l ? "ATM Trigger" : "Conf " + IntegerToString((int)conf_long) + "%->" + IntegerToString(conf_thresh) + "%";
-    else if(ltf_trend == -1)
-        wait_s = pass_s ? "ATM Trigger" : "Conf " + IntegerToString((int)conf_short) + "%->" + IntegerToString(conf_thresh) + "%";
-    else
-        wait_s = "Trail Direction";
-    flip_s = ltf_trend == 1 ? "Trail flip->bearish" : ltf_trend == -1 ? "Trail flip->bullish" : "Any trail confirmation";
-    string trig_s = t_atm_b ? "ATM BUY" : t_sm_b ? "SMART BUY" : t_atm_s ? "ATM SELL" : t_sm_s ? "SMART SELL" : "WAIT";
-    string exec_s = final_long ? "EXEC LONG" : final_short ? "EXEC SHORT" : (pass_l || pass_s) ? "CONF OK / NO TRIG" : "LOW CONF";
+
+    // ── Suggested duration per period ────────────────────────────────
+    ENUM_TIMEFRAMES p = (ENUM_TIMEFRAMES)Period();
+    string dur_s;
+    if(p <= PERIOD_M1)       dur_s = "5 - 15 min";
+    else if(p <= PERIOD_M5)  dur_s = "15 - 60 min";
+    else if(p <= PERIOD_M15) dur_s = "1 - 4 hr";
+    else if(p <= PERIOD_H1)  dur_s = "4 - 24 hr";
+    else                     dur_s = "1 - 7 days";
 
     Comment(
-        "=== THE AGENT PROTOCOL | LIQUIDITY SUITE ===\n"
-        "I AM:      " + bias + " | " + action + " | " + IntegerToString((int)MathRound(conf)) + "% conf\n"
-        "WAITING:   " + wait_s + "\n"
-        "FLIP IF:   " + flip_s + "\n"
-        "--- FRACTAL H1->M15->Now ---\n"
-        "H1:        " + h1s  + "  [" + h1_ok  + "]\n"
-        "M15:       " + m15s + "  [" + m15_ok + "]\n"
-        "STRUCTURE: " + strs + "  " + bos_s + "  [" + str_ok + "]\n"
-        "--- LONG  " + IntegerToString((int)MathRound(conf_long))  + "% (need " + IntegerToString(conf_thresh) + "%) ---\n"
-        "MTF:" + mtf_ls + " STR:" + (str_bias == 1 ? "HH/HL" : "NO") + " RSI:" + (rsi_pos ? "POS" : "NO") + " VWAP:" + (vwap_bull ? "BULL" : "NO") + " FIB:" + (!requireFibTrend ? "OFF" : fib_bull ? "BULL" : "NO") + " VP:" + (!vpEnabled ? "OFF" : vp_bull ? ">VAL" : "NO") + "\n"
-        "--- SHORT " + IntegerToString((int)MathRound(conf_short)) + "% (need " + IntegerToString(conf_thresh) + "%) ---\n"
-        "MTF:" + mtf_ss + " STR:" + (str_bias == -1 ? "LH/LL" : "NO") + " RSI:" + (rsi_neg ? "NEG" : "NO") + " VWAP:" + (vwap_bear ? "BEAR" : "NO") + " FIB:" + (!requireFibTrend ? "OFF" : fib_bear ? "BEAR" : "NO") + " VP:" + (!vpEnabled ? "OFF" : vp_bear ? "<VAH" : "NO") + "\n"
-        "--- EXECUTION ---\n"
-        "TRIGGER: " + trig_s + " | DIR: " + (trail_ok_l ? "L" : trail_ok_s ? "S" : "--") + "\n"
-        "CONF GATE: " + exec_s + "\n"
-        "CLAW: " + claw_mode + " -> " + IntegerToString(conf_thresh) + "%\n"
-        "VOL: " + vp_pos
+        "╔═══ VANILLA AGENT — DERIV OPTIONS PROTOCOL ═══╗\n"
+        "  CONTRACT  : " + contract + "  |  " + contracts_s + "\n"
+        "  DIRECTION : " + direction + "\n"
+        "  CONFIDENCE: " + IntegerToString((int)MathRound(conf_active)) + "%  (need " + IntegerToString(conf_thresh) + "%)\n"
+        "  DURATION  : " + dur_s + "  (suggested)\n"
+        "  STRIKE    : ATM — " + DoubleToString(close_p, _Digits) + "\n"
+        "╠═══ REGIME ══════════════════════════════════╣\n"
+        "  " + regime_s + "\n"
+        "╠═══ LAYERS ══════════════════════════════════╣\n"
+        "  MTF (H1+M15) : " + (ltf_trend == 1 ? mtf_ls : mtf_ss) + "\n"
+        "  H1 / M15     : " + h1s + " / " + m15s + "\n"
+        "  STRUCTURE    : " + strs + (bull_bos ? "  [BOS+]" : bear_bos ? "  [BOS-]" : "") + "\n"
+        "  RSI MOMENTUM : " + (rsi_pos ? "POSITIVE ▲" : rsi_neg ? "NEGATIVE ▼" : "NEUTRAL") + "\n"
+        "  VWAP ANCHOR  : " + (vwap_bull ? "BULLISH" : vwap_bear ? "BEARISH" : "—") + "\n"
+        "  FIB BANDS    : " + (!requireFibTrend ? "OFF" : fib_bull ? "BULL ✓" : fib_bear ? "BEAR ✓" : "WAIT") + "\n"
+        "  VOL PROFILE  : " + (!vpEnabled ? "OFF" : vp_pos) + "\n"
+        "╠═══ ACTION ══════════════════════════════════╣\n"
+        "  >> " + entry_s + "\n"
+        "  CLAW MODE : " + claw_mode + "  (" + IntegerToString(conf_thresh) + "% threshold)\n"
+        "╚═════════════════════════════════════════════╝"
     );
 }
 
