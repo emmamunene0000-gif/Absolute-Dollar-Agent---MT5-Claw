@@ -976,11 +976,9 @@ p_trail = plot(ltf_trend != ltf_trend[1] ? na : ltf_trail, "Trail", color=trend_
 p_ma    = plot(ta.ema(close, ma_len), "MA", color=color.new(trend_col, 100), linewidth=1)
 fill(p_trail, p_ma, ltf_trail, ta.ema(close, ma_len), color.new(trend_col, 85), color.new(trend_col, 96), "Trend Cloud")
 
-// Trail flip diamonds (regime change markers — same as original)
-plotshape(flip_bull ? ltf_trail : na, "CALL Zone Start", shape.diamond, location.absolute, color.new(bull_color, 50), size=size.small)
-plotshape(flip_bull ? ltf_trail : na, "CALL Zone Start ", shape.diamond, location.absolute, bull_color, size=size.tiny)
-plotshape(flip_bear ? ltf_trail : na, "PUT Zone Start",  shape.diamond, location.absolute, color.new(bear_color, 50), size=size.small)
-plotshape(flip_bear ? ltf_trail : na, "PUT Zone Start ", shape.diamond, location.absolute, bear_color, size=size.tiny)
+// Trail flip diamonds (regime change markers — single per direction, saves 2 plots vs original layered pair)
+plotshape(flip_bull ? ltf_trail : na, "CALL Zone Start", shape.diamond, location.absolute, color.new(bull_color, 30), size=size.small)
+plotshape(flip_bear ? ltf_trail : na, "PUT Zone Start",  shape.diamond, location.absolute, color.new(bear_color, 30), size=size.small)
 
 // Sniper entries — trail flip = purest entry, large triangle, highest priority visual
 plotshape(final_sniper_call, title="SNIPER CALL (Trail Flip)", style=shape.triangleup,   location=location.belowbar, color=bull_color, textcolor=color.white, size=size.large, text="CALL\nSNIPER")
