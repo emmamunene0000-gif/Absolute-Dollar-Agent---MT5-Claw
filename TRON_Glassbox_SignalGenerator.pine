@@ -400,9 +400,10 @@ calcLiqTrail(mlen, alen, amult) =>
     [t_trend, t_trail]
 
 [ltf_trend, ltf_trail] = calcLiqTrail(ma_len, atr_len, atr_mult)
-[m15_trend, m15_trail] = request.security(syminfo.tickerid, "15", calcLiqTrail(ma_len, atr_len, atr_mult))
-[h1_trend,  h1_trail]  = request.security(syminfo.tickerid, "60", calcLiqTrail(ma_len, atr_len, atr_mult))
-[m5_trend,  m5_trail]  = request.security(syminfo.tickerid, "5",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[m5_trend,  m5_trail]  = request.security(syminfo.tickerid, "5",   calcLiqTrail(ma_len, atr_len, atr_mult))
+[m15_trend, m15_trail] = request.security(syminfo.tickerid, "15",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[h1_trend,  h1_trail]  = request.security(syminfo.tickerid, "60",  calcLiqTrail(ma_len, atr_len, atr_mult))
+[h4_trend,  h4_trail]  = request.security(syminfo.tickerid, "240", calcLiqTrail(ma_len, atr_len, atr_mult))
 
 mtf_bullish = m15_trend == 1 and h1_trend == 1
 mtf_bearish = m15_trend == -1 and h1_trend == -1
@@ -916,26 +917,70 @@ bool gated_put_ATM  = trig_put_ATM  and trail_allows_short
 bool gated_call_smart = trig_call_smart and trail_allows_long
 bool gated_put_smart  = trig_put_smart  and trail_allows_short
 
-// Primary entry detection — pure confluence, zero position awareness
-bool final_call_entry = gated_call_ATM and bull_conf_pass
-bool final_put_entry  = gated_put_ATM  and bear_conf_pass
+// --- Spatial Confluence Quality Filter ---
+// Entries suppressed when price is in dead-space (no key level within 0.5 ATR).
+// Asset-agnostic: trail level + volume POC cover both trending & ranging markets.
+float atr1 = current_atr * 0.5
+bool near_trail = math.abs(close - ltf_trail) <= atr1
+bool near_poc   = vpEnabled and not na(vp_currentPOC) and math.abs(close - vp_currentPOC) <= atr1
+bool spatial_quality = near_trail or near_poc
 
-// Continuation detection — fires every time momentum re-confirms trend
-// direction. NOT gated on "am I already in a trade" (Pine doesn't know).
-// The Brain decides whether this is a fresh entry or a scale-in based on
-// its own position ledger.
+// --- Signal Deduplication ring buffer (last 3 entry bar indices) ---
+// Prevents repeat entry signals within min_bars_between bars of the same type.
+int min_bars_between = 3
+var int call_bar_a = -999
+var int call_bar_b = -999
+var int call_bar_c = -999
+var int put_bar_a  = -999
+var int put_bar_b  = -999
+var int put_bar_c  = -999
+bool call_too_soon = (bar_index - call_bar_a) < min_bars_between or (bar_index - call_bar_b) < min_bars_between or (bar_index - call_bar_c) < min_bars_between
+bool put_too_soon  = (bar_index - put_bar_a)  < min_bars_between or (bar_index - put_bar_b)  < min_bars_between or (bar_index - put_bar_c)  < min_bars_between
+
+// Primary entry detection — pure confluence, zero position awareness
+bool final_call_entry = gated_call_ATM and bull_conf_pass and spatial_quality and not call_too_soon
+bool final_put_entry  = gated_put_ATM  and bear_conf_pass and spatial_quality and not put_too_soon
+
+if final_call_entry
+    call_bar_c := call_bar_b
+    call_bar_b := call_bar_a
+    call_bar_a := bar_index
+if final_put_entry
+    put_bar_c := put_bar_b
+    put_bar_b := put_bar_a
+    put_bar_a := bar_index
+
+// Continuation — intentionally NOT deduplicated. Brain decides: new entry or scale.
 bool continuation_call = gated_call_smart
 bool continuation_put  = gated_put_smart
 
-// Trail flip — raw detection event, independent of any position
+// Trail flip — single-bar pulse
 bool flip_bull = ltf_trend == 1  and ltf_trend[1] == -1
 bool flip_bear = ltf_trend == -1 and ltf_trend[1] == 1
 
-// Regime-shift detection — "if you are holding a long-side position,
-// here's why you might want to exit it." Pine does not know if a
-// position exists; it only reports the regime condition firing.
-bool bearish_regime_shift = (exit_on_trail and flip_bear) or (exit_on_vwap and vwapBearish) or (exit_on_fib and fibBearish) or (exit_on_struct and bearBOS)
-bool bullish_regime_shift = (exit_on_trail and flip_bull) or (exit_on_vwap and vwapBullish) or (exit_on_fib and fibBullish) or (exit_on_struct and bullBOS)
+// Regime shifts — edge-only (no persistent-state spam)
+bool bearish_regime_shift = (exit_on_trail and flip_bear) or
+     (exit_on_vwap and vwapBearish and not vwapBearish[1]) or
+     (exit_on_fib  and fibBearish  and not fibBearish[1])  or
+     (exit_on_struct and bearBOS)
+bool bullish_regime_shift = (exit_on_trail and flip_bull) or
+     (exit_on_vwap and vwapBullish and not vwapBullish[1]) or
+     (exit_on_fib  and fibBullish  and not fibBullish[1])  or
+     (exit_on_struct and bullBOS)
+
+// Risk-aware SL / TP (ATR-based, asset-agnostic — CFD, Vanilla, Futures)
+float sl_atr_mult  = 1.5
+float tp1_atr_mult = 1.0
+float tp2_atr_mult = 2.0
+float tp3_atr_mult = 3.5
+float call_sl  = close - current_atr * sl_atr_mult
+float call_tp1 = close + current_atr * tp1_atr_mult
+float call_tp2 = close + current_atr * tp2_atr_mult
+float call_tp3 = close + current_atr * tp3_atr_mult
+float put_sl   = close + current_atr * sl_atr_mult
+float put_tp1  = close - current_atr * tp1_atr_mult
+float put_tp2  = close - current_atr * tp2_atr_mult
+float put_tp3  = close - current_atr * tp3_atr_mult
 
 // =========================================================================
 // STEP 14: VISUAL OUTPUTS (VANILLA-SPECIFIC)
@@ -1251,52 +1296,71 @@ else if not dashOn and not na(dashTable)
     prevPlace := ""
 
 // =========================================================================
-// STEP 17: ALERTS — self-aware JSON payloads
-// Pine does NOT track position state. Every payload below carries the full
-// architecture-state snapshot (confidence, trend, structure, strike, expiry)
-// so the external Brain can reconstruct *why* the signal fired without
-// querying Pine separately, and decide for itself how to act on it.
+// STEP 17: ALERTS — Telegram-native formatted messages
+//
+// TradingView Alert setup:
+//   Message field = {{alert_message}}
+//   Webhook URL   = https://api.telegram.org/botYOUR_TOKEN/sendMessage
+//   Chat ID param = embedded in webhook or handled by Jarvis relay
+//
+// Each alert fires as a fully-formatted Telegram message — no middleware,
+// no webhook parser needed. Pine carries the full architecture state so
+// Jarvis can reconstruct context from the message alone.
 // =========================================================================
-jsonPayload(string sigType, string bias, float confPct) =>
-    '{"system":"TRON_GLASSBOX","signal":"' + sigType + '"' +
-     ',"bias":"' + bias + '"' +
-     ',"symbol":"' + syminfo.ticker + '"' +
-     ',"timeframe":"' + timeframe.period + '"' +
-     ',"time":' + str.tostring(time) +
-     ',"price":' + str.tostring(close) +
-     ',"confidence_pct":' + str.tostring(math.round(confPct)) +
-     ',"conf_threshold":' + str.tostring(conf_threshold) +
-     ',"mtf_aligned":' + (bias == "CALL" ? str.tostring(mtf_bull_conf) : str.tostring(mtf_bear_conf)) +
-     ',"structure_bias":"' + (bullBOS ? "BULLISH" : bearBOS ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"trend_state":' + str.tostring(ltf_trend) +
-     ',"vwap_regime":"' + (vwapBullish ? "BULLISH" : vwapBearish ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"fib_regime":"' + (fibBullish ? "BULLISH" : fibBearish ? "BEARISH" : "NEUTRAL") + '"' +
-     ',"call_strike":' + str.tostring(call_strike, "#.##") +
-     ',"put_strike":' + str.tostring(put_strike, "#.##") +
-     ',"strike_mode":"' + strike_mode + '"' +
-     ',"rec_expiry_min":' + str.tostring(rec_expiry) +
-     '}'
+
+trendLabel(int t) =>
+    t == 1 ? "BULL" : t == -1 ? "BEAR" : "NEUT"
+
+tronAlert(string sigType, string bias, float confPct) =>
+    string strike   = bias == "CALL" ? str.tostring(call_strike, "#.##") : str.tostring(put_strike, "#.##")
+    string sl_str   = bias == "CALL" ? str.tostring(call_sl,  "#.##") : str.tostring(put_sl,  "#.##")
+    string tp1_str  = bias == "CALL" ? str.tostring(call_tp1, "#.##") : str.tostring(put_tp1, "#.##")
+    string tp2_str  = bias == "CALL" ? str.tostring(call_tp2, "#.##") : str.tostring(put_tp2, "#.##")
+    string tp3_str  = bias == "CALL" ? str.tostring(call_tp3, "#.##") : str.tostring(put_tp3, "#.##")
+    string conf_b   = bias == "CALL" ? ("Bull " + str.tostring(math.round(bull_conf_pct)) + "% | Bear " + str.tostring(math.round(bear_conf_pct)) + "%") : ("Bear " + str.tostring(math.round(bear_conf_pct)) + "% | Bull " + str.tostring(math.round(bull_conf_pct)) + "%")
+    string mtf_str  = (mtf_bull_conf or mtf_bear_conf) ? "ALIGNED" : "PARTIAL"
+    string qual_str = spatial_quality ? "KEY LEVEL" : "OPEN SPACE"
+    string line1    = "ABSOLUTE DOLLAR INTELLIGENCE\n"
+    string line2    = sigType + " -- " + syminfo.ticker + " | " + timeframe.period + "m\n\n"
+    string line3    = "FRACTAL 4-LAYER SYNC\n"
+    string line4    = "L1 Sovereign H4: " + trendLabel(h4_trend)  + "\n"
+    string line5    = "L2 Anchor    H1: " + trendLabel(h1_trend)  + "\n"
+    string line6    = "L3 Filter   M15: " + trendLabel(m15_trend) + "\n"
+    string line7    = "L4 Exec      M5: " + trendLabel(m5_trend)  + "\n\n"
+    string line8    = "CORE SIGNALS\n"
+    string line9    = "Confidence: " + conf_b + "\n"
+    string line10   = "Structure:  " + (bullBOS ? "Bullish BOS" : bearBOS ? "Bearish BOS" : "Neutral") + "\n"
+    string line11   = "VWAP:       " + (vwapBullish ? "Bullish" : vwapBearish ? "Bearish" : "Neutral") + "\n"
+    string line12   = "Fib:        " + (fibBullish ? "Bullish" : fibBearish ? "Bearish" : "Neutral") + "\n\n"
+    string line13   = "BIAS: " + bias + " -- " + str.tostring(math.round(confPct)) + "% conf | MTF: " + mtf_str + " | " + qual_str + "\n\n"
+    string line14   = "VANILLA OPTIONS SETUP\n"
+    string line15   = "Strike: " + strike + " (" + strike_mode + ")  Expiry: " + str.tostring(rec_expiry) + "m\n"
+    string line16   = "Entry:  " + str.tostring(close, "#.##") + "\n"
+    string line17   = "SL:     " + sl_str + "\n"
+    string line18   = "TP1/2/3: " + tp1_str + " / " + tp2_str + " / " + tp3_str + "\n\n"
+    string line19   = "Gate: " + str.tostring(conf_threshold) + "%  ATR: " + str.tostring(current_atr, "#.####")
+    line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19
 
 if final_call_entry
-    alert(jsonPayload("ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("⚡ CALL ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if final_put_entry
-    alert(jsonPayload("ENTRY", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("⚡ PUT ENTRY", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if continuation_call
-    alert(jsonPayload("CONTINUATION", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔄 CALL CONTINUATION", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if continuation_put
-    alert(jsonPayload("CONTINUATION", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔄 PUT CONTINUATION", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bullish_regime_shift
-    alert(jsonPayload("REGIME_SHIFT", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔀 BULLISH REGIME SHIFT", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bearish_regime_shift
-    alert(jsonPayload("REGIME_SHIFT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🔀 BEARISH REGIME SHIFT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bull_conf_pass and not bull_conf_pass[1]
-    alert(jsonPayload("CONFIDENCE_PASS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("✅ CALL CONFIDENCE PASS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bear_conf_pass and not bear_conf_pass[1]
-    alert(jsonPayload("CONFIDENCE_PASS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("✅ PUT CONFIDENCE PASS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 if bullBOS
-    alert(jsonPayload("BOS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🏗 BULLISH BOS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
 if bearBOS
-    alert(jsonPayload("BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+    alert(tronAlert("🏗 BEARISH BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 
 // Static alertcondition() entries kept for TradingView's Alert dialog dropdown
 alertcondition(final_call_entry,    title="Vanilla Call Entry",      message="TRON GLASSBOX: CALL ENTRY")
