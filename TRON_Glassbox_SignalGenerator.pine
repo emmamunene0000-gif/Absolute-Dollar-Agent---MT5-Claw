@@ -130,12 +130,13 @@ fib_weight      = input.float(0.5, "Fib Weight", minval=0, maxval=3.0, step=0.25
 vp_weight       = input.float(0.5, "Volume Profile Weight", minval=0, maxval=3.0, step=0.25, group=g_conf)
 
 // --- 10. Vanilla Options Engine ---
-strike_mode     = input.string("Dynamic", "Strike Selection", options=["ATM", "ITM", "OTM", "Dynamic"], group=g_van, tooltip="Dynamic: High conf=OTM, Med=ATM, Low=ITM")
+strike_mode     = input.string("ATM", "Strike Selection", options=["ATM", "ITM", "OTM", "Dynamic"], group=g_van, tooltip="ATM = at current price. Dynamic: High conf=OTM, Med=ATM, Low=ITM")
 itm_mult        = input.float(0.5, "ITM Distance (ATR x)", minval=0.1, step=0.1, group=g_van)
 otm_mult        = input.float(1.0, "OTM Distance (ATR x)", minval=0.1, step=0.1, group=g_van)
-min_expiry      = input.int(1, "Min Expiry (minutes)", minval=1, group=g_van)
-max_expiry      = input.int(60, "Max Expiry (minutes)", minval=1, group=g_van)
-expiry_base     = input.int(5, "Base Bars Multiplier", minval=1, group=g_van, tooltip="Expiry = Base x timeframe x trend/vol factor")
+rr_tp_mult      = input.float(1.5, "RR TP Target (ATR x)", minval=0.5, step=0.25, group=g_van, tooltip="TP = entry ± (ATR x this mult). Expiry derived from how many bars at current ATR/bar velocity to reach TP.")
+rr_sl_mult      = input.float(1.0, "RR SL Distance (ATR x)", minval=0.25, step=0.25, group=g_van)
+min_expiry      = input.int(2, "Min Expiry (minutes)", minval=1, group=g_van)
+max_expiry      = input.int(30, "Max Expiry (minutes — scalp cap)", minval=1, group=g_van)
 show_strikes    = input.bool(true, "Show Strike Levels", group=g_van)
 show_expiry     = input.bool(true, "Show Expiry Labels", group=g_van)
 
@@ -898,13 +899,69 @@ else if strike_mode == "Dynamic"
     put_strike := bear_conf_pct >= 85 and mtf_bear_conf ? put_strike_otm : bear_conf_pct >= 70 ? put_strike_atm : put_strike_itm
 
 // =========================================================================
-// STEP 12: EXPIRY ADVISOR
+// STEP 11b: REGIME STRENGTH (replaces binary flip with scored 0-100 value)
 // =========================================================================
-float tf_min = timeframe.in_seconds(timeframe.period) / 60.0
-float trend_mag = math.abs(bull_conf_pct - bear_conf_pct) / 100.0
-float vol_norm = math.min(current_atr / close * 1000.0, 5.0)
-int rec_expiry = int(math.round(tf_min * expiry_base * (1.0 + trend_mag * 2.0 + vol_norm)))
-rec_expiry := math.max(min_expiry, math.min(max_expiry, rec_expiry))
+// Consecutive bars in current trail direction — momentum continuity score
+var int regime_bar_count = 0
+regime_bar_count := ltf_trend == ltf_trend[1] ? regime_bar_count + 1 : 1
+
+// Distance from price to trail, normalized to ATR — how "committed" the regime is
+float trail_distance_atr = (close - ltf_trail) / math.max(current_atr, syminfo.mintick)
+float regime_strength_raw = math.min(math.abs(trail_distance_atr) * 25 + regime_bar_count * 2, 100.0)
+float regime_strength = ltf_trend == 1 ? regime_strength_raw : ltf_trend == -1 ? -regime_strength_raw : 0.0
+
+// Nested regime detection: H4/H1/M15 alignment gives 4 levels
+int sync_layers = (h4_trend == ltf_trend ? 1 : 0) + (h1_trend == ltf_trend ? 1 : 0) + (m15_trend == ltf_trend ? 1 : 0) + (m5_trend == ltf_trend ? 1 : 0)
+string regime_quality = sync_layers >= 4 ? "SOVEREIGN" : sync_layers >= 3 ? "ALIGNED" : sync_layers >= 2 ? "MIXED" : "OPPOSED"
+
+// =========================================================================
+// STEP 12: RR-BASED EXPIRY ADVISOR (scalping-optimised)
+// =========================================================================
+// Philosophy: expiry = time for price to travel from entry to TP at current
+// ATR-per-bar velocity. Keeps scalp expiries tight and volatility-aware.
+float tf_min       = timeframe.in_seconds(timeframe.period) / 60.0
+float atr_per_bar  = math.max(current_atr, syminfo.mintick)
+float tp_distance  = atr_per_bar * rr_tp_mult
+float bars_to_tp   = tp_distance / atr_per_bar
+// Regime tailwind: strong aligned regime → shorter expiry (momentum carries price faster)
+float regime_adj   = sync_layers >= 3 ? 0.75 : sync_layers >= 2 ? 1.0 : 1.3
+int rec_expiry     = int(math.round(bars_to_tp * tf_min * regime_adj))
+rec_expiry        := math.max(min_expiry, math.min(max_expiry, rec_expiry))
+
+// RR levels (asset-agnostic ATR-based, used in alert and dashboard)
+float rr_ratio     = rr_tp_mult / rr_sl_mult
+
+// =========================================================================
+// STEP 12b: IMPLIED VOLATILITY PROXY + DELTA APPROXIMATION
+// =========================================================================
+// IV proxy: annualise ATR-based historical vol (ATR/price × sqrt(bars/year))
+float bars_per_year = 252.0 * (1440.0 / math.max(tf_min, 1.0))
+float iv_proxy      = (current_atr / close) * math.sqrt(bars_per_year)
+
+// Approximate delta for current strike vs ATM using simplified Black-Scholes d1:
+// delta ≈ 0.5 + 0.4 × (ITM/OTM offset / (IV × sqrt(T)))
+// T = expiry as fraction of year
+float T_years       = (rec_expiry / 60.0) / (252.0 * 6.5)
+float call_d1       = (math.log(close / math.max(call_strike, syminfo.mintick)) + 0.5 * iv_proxy * iv_proxy * T_years) / math.max(iv_proxy * math.sqrt(T_years), 0.0001)
+float put_d1        = (math.log(close / math.max(put_strike,  syminfo.mintick)) + 0.5 * iv_proxy * iv_proxy * T_years) / math.max(iv_proxy * math.sqrt(T_years), 0.0001)
+float call_delta    = math.max(0.01, math.min(0.99, 0.5 + 0.4 * call_d1))
+float put_delta     = math.max(0.01, math.min(0.99, 0.5 - 0.4 * put_d1))
+
+// Hypothetical PnL tracker — shows what last confirmed signal would be worth now
+// Pine can't know actual premium paid, so we proxy: premium ≈ delta × strike × IV × sqrt(T)
+var float last_entry_price = na
+var string last_entry_bias = ""
+if final_call_entry
+    last_entry_price := close
+    last_entry_bias  := "CALL"
+if final_put_entry
+    last_entry_price := close
+    last_entry_bias  := "PUT"
+
+float pnl_pts = na
+if not na(last_entry_price)
+    pnl_pts := last_entry_bias == "CALL" ? close - last_entry_price : last_entry_bias == "PUT" ? last_entry_price - close : na
+string pnl_label = na(pnl_pts) ? "—" : (pnl_pts >= 0 ? "+" : "") + str.tostring(pnl_pts, "#.##") + " pts (" + (pnl_pts >= 0 ? "WIN" : "LOSS") + ")"
 
 // =========================================================================
 // STEP 13: STATELESS SIGNAL DETECTION (no position tracking — Brain's job)
@@ -969,19 +1026,15 @@ bool bullish_regime_shift = (exit_on_trail and flip_bull) or
      (exit_on_fib  and fibBullish  and not fibBullish[1])  or
      (exit_on_struct and bullBOS)
 
-// Risk-aware SL / TP (ATR-based, asset-agnostic — CFD, Vanilla, Futures)
-float sl_atr_mult  = 1.5
-float tp1_atr_mult = 1.0
-float tp2_atr_mult = 2.0
-float tp3_atr_mult = 3.5
-float call_sl  = close - current_atr * sl_atr_mult
-float call_tp1 = close + current_atr * tp1_atr_mult
-float call_tp2 = close + current_atr * tp2_atr_mult
-float call_tp3 = close + current_atr * tp3_atr_mult
-float put_sl   = close + current_atr * sl_atr_mult
-float put_tp1  = close - current_atr * tp1_atr_mult
-float put_tp2  = close - current_atr * tp2_atr_mult
-float put_tp3  = close - current_atr * tp3_atr_mult
+// Risk-aware SL / TP (ATR RR model — asset-agnostic, CFD/Vanilla/Futures)
+float call_sl  = close - current_atr * rr_sl_mult
+float call_tp1 = close + current_atr * rr_tp_mult
+float call_tp2 = close + current_atr * rr_tp_mult * 2.0
+float call_tp3 = close + current_atr * rr_tp_mult * 3.5
+float put_sl   = close + current_atr * rr_sl_mult
+float put_tp1  = close - current_atr * rr_tp_mult
+float put_tp2  = close - current_atr * rr_tp_mult * 2.0
+float put_tp3  = close - current_atr * rr_tp_mult * 3.5
 
 // =========================================================================
 // STEP 14: VISUAL OUTPUTS (VANILLA-SPECIFIC)
@@ -1157,7 +1210,7 @@ float bull_mtf_pts = mtf_bull_conf ? mtf_weight : mtf_partial_bull ? mtf_weight 
 float bear_mtf_pts = mtf_bear_conf ? mtf_weight : mtf_partial_bear ? mtf_weight * 0.4 : 0.0
 
 if dashOn and (na(dashTable) or panelPlacement != prevPlace)
-    dashTable := table.new(pos_enum, 4, 30, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
+    dashTable := table.new(pos_enum, 4, 36, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
     prevPlace := panelPlacement
 
 if dashOn and not na(dashTable)
@@ -1296,8 +1349,35 @@ if dashOn and not na(dashTable)
     color  conf_color = final_call_entry ? txt_bull : final_put_entry ? txt_bear : gate_warn
     table.cell(dashTable, 1, 29, conf_label, text_color=conf_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
+    table.merge_cells(dashTable, 0, 30, 3, 30)
+    table.cell(dashTable, 0, 30, " REGIME INTELLIGENCE ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 31, " STRENGTH ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 31, 2, 31)
+    color rstr_color = regime_strength > 30 ? gate_pass : regime_strength < -30 ? gate_fail : gate_warn
+    table.cell(dashTable, 1, 31, str.tostring(math.round(math.abs(regime_strength))) + "% (" + str.tostring(regime_bar_count) + " bars)", text_color=rstr_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 31, regime_quality, text_color=regime_quality == "SOVEREIGN" ? gate_pass : regime_quality == "ALIGNED" ? gate_pass : regime_quality == "MIXED" ? gate_warn : gate_fail, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 32, " IV PROXY ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 32, str.tostring(math.round(iv_proxy * 100)) + "% ann.", text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 32, "RR", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 32, "1:" + str.tostring(rr_ratio, "#.#"), text_color=rr_ratio >= 1.5 ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 33, " DELTA ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 33, "C: " + str.tostring(call_delta, "#.##"), text_color=txt_bull, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 33, "P: " + str.tostring(put_delta, "#.##"), text_color=txt_bear, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 33, call_delta >= 0.4 and call_delta <= 0.6 ? "ATM" : call_delta < 0.4 ? "OTM" : "ITM", text_color=txt_neut, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.merge_cells(dashTable, 0, 34, 3, 34)
+    table.cell(dashTable, 0, 34, " SIGNAL P&L (last entry vs now) ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 35, " PNL ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 35, 3, 35)
+    color pnl_color = na(pnl_pts) ? txt_neut : pnl_pts >= 0 ? gate_pass : gate_fail
+    table.cell(dashTable, 1, 35, pnl_label + (na(last_entry_bias) ? "" : "  [" + last_entry_bias + "]"), text_color=pnl_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
 else if not dashOn and not na(dashTable)
-    table.clear(dashTable, 0, 0, 3, 29)
+    table.clear(dashTable, 0, 0, 3, 35)
     dashTable := na
     prevPlace := ""
 
@@ -1338,14 +1418,17 @@ tronAlert(string sigType, string bias, float confPct) =>
     string line10   = "Structure:  " + (bullBOS ? "Bullish BOS" : bearBOS ? "Bearish BOS" : "Neutral") + "\n"
     string line11   = "VWAP:       " + (vwapBullish ? "Bullish" : vwapBearish ? "Bearish" : "Neutral") + "\n"
     string line12   = "Fib:        " + (fibBullish ? "Bullish" : fibBearish ? "Bearish" : "Neutral") + "\n\n"
+    string delta_str  = bias == "CALL" ? str.tostring(call_delta, "#.##") : str.tostring(put_delta, "#.##")
+    string rstr_str   = str.tostring(math.round(math.abs(regime_strength))) + "% | " + regime_quality + " | " + str.tostring(regime_bar_count) + " bars"
     string line13   = "BIAS: " + bias + " -- " + str.tostring(math.round(confPct)) + "% conf | MTF: " + mtf_str + " | " + qual_str + "\n\n"
     string line14   = "VANILLA OPTIONS SETUP\n"
     string line15   = "Strike: " + strike + " (" + strike_mode + ")  Expiry: " + str.tostring(rec_expiry) + "m\n"
     string line16   = "Entry:  " + str.tostring(close, "#.##") + "\n"
-    string line17   = "SL:     " + sl_str + "\n"
+    string line17   = "SL:     " + sl_str + "  RR: 1:" + str.tostring(rr_ratio, "#.#") + "\n"
     string line18   = "TP1/2/3: " + tp1_str + " / " + tp2_str + " / " + tp3_str + "\n\n"
-    string line19   = "Gate: " + str.tostring(conf_threshold) + "%  ATR: " + str.tostring(current_atr, "#.####")
-    line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19
+    string line19   = "REGIME: " + rstr_str + "\n"
+    string line20   = "IV: " + str.tostring(math.round(iv_proxy * 100)) + "%  Delta: " + delta_str + "  ATR: " + str.tostring(current_atr, "#.####")
+    line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19 + line20
 
 if final_call_entry
     alert(tronAlert("⚡ CALL ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
