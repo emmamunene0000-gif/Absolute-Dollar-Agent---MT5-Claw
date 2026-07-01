@@ -39,7 +39,7 @@ const string g_dash = "13. Cognitive Dashboard"
 // =========================================================================
 
 // --- 0. Trading Mode ---
-trade_mode = input.string("Vanilla Options", "Mode", options=["Vanilla Options", "Perpetual Futures"], group=g_mode)
+trade_mode = input.string("Vanilla Options", "Mode", options=["Vanilla Options", "Rise/Fall", "Perpetual Futures"], group=g_mode, tooltip="Vanilla Options = strike + expiry. Rise/Fall = direction + expiry only (no strike). Perpetual Futures = CFD mode.")
 
 // --- 1. MTF Trail ---
 ma_len    = input.int(55, "MA Length", minval=1, maxval=500, group=g_mtf)
@@ -996,9 +996,32 @@ if final_put_entry
 bool continuation_call = gated_call_smart
 bool continuation_put  = gated_put_smart
 
-// Trail flip — single-bar pulse
+// Trail flip — single-bar pulse (chart timeframe)
 bool flip_bull = ltf_trend == 1  and ltf_trend[1] == -1
 bool flip_bear = ltf_trend == -1 and ltf_trend[1] == 1
+
+// MTF trail flips — each higher-TF flip is a sniper-tier event
+bool flip_m5_bull  = m5_trend  == 1  and m5_trend[1]  == -1
+bool flip_m5_bear  = m5_trend  == -1 and m5_trend[1]  == 1
+bool flip_m15_bull = m15_trend == 1  and m15_trend[1] == -1
+bool flip_m15_bear = m15_trend == -1 and m15_trend[1] == 1
+bool flip_h1_bull  = h1_trend  == 1  and h1_trend[1]  == -1
+bool flip_h1_bear  = h1_trend  == -1 and h1_trend[1]  == 1
+bool flip_h4_bull  = h4_trend  == 1  and h4_trend[1]  == -1
+bool flip_h4_bear  = h4_trend  == -1 and h4_trend[1]  == 1
+
+// Trail Flip Sniper entries — chart trail just flipped with MTF support
+// Cleanest entries in the system: new regime confirmed, ride from bar one
+bool trail_flip_call = flip_bull and (mtf_bull_conf or mtf_partial_bull) and bull_conf_pass
+bool trail_flip_put  = flip_bear and (mtf_bear_conf or mtf_partial_bear) and bear_conf_pass
+
+// Higher-TF flip entries — M15 or H1 trail flipping = institutional momentum shift
+bool mtf_flip_call = (flip_m15_bull or flip_h1_bull) and trail_allows_long and bull_conf_pass
+bool mtf_flip_put  = (flip_m15_bear or flip_h1_bear) and trail_allows_short and bear_conf_pass
+
+// Sovereign flip — H4 flipping is the biggest signal in the system (no conf gate — it IS the gate)
+bool sovereign_flip_call = flip_h4_bull and trail_allows_long
+bool sovereign_flip_put  = flip_h4_bear and trail_allows_short
 
 // Regime shifts — edge-only (no persistent-state spam)
 // Zone breaks included: support lost = bearish regime, resistance broken = bullish regime
@@ -1091,6 +1114,52 @@ if liq_call_break and not liq_call_entry
     label.new(bar_index, low,  "BREAK CALL", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
 if liq_put_break and not liq_put_entry
     label.new(bar_index, high, "BREAK PUT",  color=color.new(color.maroon, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// Sovereign flip — H4 trail flip, the largest label in the system (cyan)
+if sovereign_flip_call
+    label.new(bar_index, low,  "H4 FLIP CALL\nStrike: " + str.tostring(call_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(color.aqua, 0), textcolor=color.black, style=label.style_label_up, size=size.normal)
+if sovereign_flip_put
+    label.new(bar_index, high, "H4 FLIP PUT\nStrike: " + str.tostring(put_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m",  color=color.new(color.aqua, 0), textcolor=color.black, style=label.style_label_down, size=size.normal)
+
+// MTF flip entries — M15/H1 trail flipped (bright purple)
+if mtf_flip_call and not sovereign_flip_call
+    label.new(bar_index, low,  "MTF FLIP CALL\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(color.purple, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+if mtf_flip_put and not sovereign_flip_put
+    label.new(bar_index, high, "MTF FLIP PUT\nExpiry: " + str.tostring(rec_expiry) + "m",  color=color.new(color.purple, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Chart trail flip with MTF confirmation (fuchsia, smaller)
+if trail_flip_call and not sovereign_flip_call and not mtf_flip_call
+    label.new(bar_index, low,  "FLIP CALL", color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+if trail_flip_put and not sovereign_flip_put and not mtf_flip_put
+    label.new(bar_index, high, "FLIP PUT",  color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// SL / TP lines — drawn on any confirmed entry, extend 80 bars forward
+// Persistent: deleted and redrawn when next entry fires
+var line active_sl  = na
+var line active_tp1 = na
+var line active_tp2 = na
+var line active_tp3 = na
+bool any_bull_entry = final_call_entry or trail_flip_call or mtf_flip_call or sovereign_flip_call or liq_call_entry
+bool any_bear_entry = final_put_entry  or trail_flip_put  or mtf_flip_put  or sovereign_flip_put  or liq_put_entry
+
+if any_bull_entry or any_bear_entry
+    line.delete(active_sl)
+    line.delete(active_tp1)
+    line.delete(active_tp2)
+    line.delete(active_tp3)
+    float e_sl  = any_bull_entry ? call_sl  : put_sl
+    float e_tp1 = any_bull_entry ? call_tp1 : put_tp1
+    float e_tp2 = any_bull_entry ? call_tp2 : put_tp2
+    float e_tp3 = any_bull_entry ? call_tp3 : put_tp3
+    color e_col = any_bull_entry ? bull_color : bear_color
+    active_sl  := line.new(bar_index, e_sl,  bar_index + 80, e_sl,  color=color.new(color.red, 10),   width=1, style=line.style_dashed,  extend=extend.none)
+    active_tp1 := line.new(bar_index, e_tp1, bar_index + 80, e_tp1, color=color.new(e_col, 30),        width=1, style=line.style_dotted,  extend=extend.none)
+    active_tp2 := line.new(bar_index, e_tp2, bar_index + 80, e_tp2, color=color.new(e_col, 20),        width=2, style=line.style_dotted,  extend=extend.none)
+    active_tp3 := line.new(bar_index, e_tp3, bar_index + 80, e_tp3, color=color.new(e_col, 10),        width=1, style=line.style_dashed,  extend=extend.none)
+    label.new(bar_index + 2, e_sl,  "SL",  color=color.new(color.black, 100), textcolor=color.new(color.red,   0), style=label.style_label_right, size=size.tiny)
+    label.new(bar_index + 2, e_tp1, "TP1", color=color.new(color.black, 100), textcolor=color.new(e_col, 0),       style=label.style_label_right, size=size.tiny)
+    label.new(bar_index + 2, e_tp2, "TP2", color=color.new(color.black, 100), textcolor=color.new(e_col, 0),       style=label.style_label_right, size=size.tiny)
+    label.new(bar_index + 2, e_tp3, "TP3", color=color.new(color.black, 100), textcolor=color.new(e_col, 0),       style=label.style_label_right, size=size.tiny)
 
 // Live strike levels — always-on detection, not gated on a held position
 plot(show_strikes and trail_allows_long ? call_strike : na, "Call Strike (live)", color=color.new(bull_color, 50), style=plot.style_linebr, linewidth=2)
@@ -1222,7 +1291,7 @@ color gate_fail  = color.new(#ff0000, 20)
 color gate_warn  = color.new(#ffaa00, 20)
 
 string sys_bias    = ltf_trend == 1 ? "BULLISH" : ltf_trend == -1 ? "BEARISH" : "NEUTRAL"
-string sys_action  = liq_call_entry ? "SNIPER CALL" : liq_put_entry ? "SNIPER PUT" : final_call_entry ? "CALL SIGNAL" : final_put_entry ? "PUT SIGNAL" : liq_call_break ? "BREAK CALL" : liq_put_break ? "BREAK PUT" : continuation_call ? "CALL CONT." : continuation_put ? "PUT CONT." : "DETECTING"
+string sys_action  = sovereign_flip_call ? "H4 FLIP CALL" : sovereign_flip_put ? "H4 FLIP PUT" : mtf_flip_call ? "MTF FLIP CALL" : mtf_flip_put ? "MTF FLIP PUT" : trail_flip_call ? "FLIP CALL" : trail_flip_put ? "FLIP PUT" : liq_call_entry ? "SNIPER CALL" : liq_put_entry ? "SNIPER PUT" : final_call_entry ? "CALL SIGNAL" : final_put_entry ? "PUT SIGNAL" : liq_call_break ? "BREAK CALL" : liq_put_break ? "BREAK PUT" : continuation_call ? "CALL CONT." : continuation_put ? "PUT CONT." : "DETECTING"
 float  sys_conf    = ltf_trend == 1 ? bull_conf_pct : ltf_trend == -1 ? bear_conf_pct : 0.0
 string sys_waiting = ltf_trend == 1 ? (bull_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bull_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : ltf_trend == -1 ? (bear_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bear_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : "Trail Direction"
 string sys_flip_req = ltf_trend == 1 ? "Trail flip -> bearish" : ltf_trend == -1 ? "Trail flip -> bullish" : "Any trail confirmation"
@@ -1231,7 +1300,7 @@ float bull_mtf_pts = mtf_bull_conf ? mtf_weight : mtf_partial_bull ? mtf_weight 
 float bear_mtf_pts = mtf_bear_conf ? mtf_weight : mtf_partial_bear ? mtf_weight * 0.4 : 0.0
 
 if dashOn and (na(dashTable) or panelPlacement != prevPlace)
-    dashTable := table.new(pos_enum, 4, 40, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
+    dashTable := table.new(pos_enum, 4, 43, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
     prevPlace := panelPlacement
 
 if dashOn and not na(dashTable)
@@ -1398,27 +1467,45 @@ if dashOn and not na(dashTable)
     table.cell(dashTable, 1, 35, pnl_label + (na(last_entry_bias) ? "" : "  [" + last_entry_bias + "]"), text_color=pnl_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
     table.merge_cells(dashTable, 0, 36, 3, 36)
-    table.cell(dashTable, 0, 36, " LIQUIDITY ZONES (Sniper Engine) ", text_color=color.new(color.yellow, 10), text_size=size.small, bgcolor=color.new(#2a2e39, 30), text_halign=text.align_left)
+    table.cell(dashTable, 0, 36, " ACTIVE SL / TP LEVELS ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
 
-    table.cell(dashTable, 0, 37, " SNIPER ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
-    table.merge_cells(dashTable, 1, 37, 3, 37)
-    string sniper_txt = liq_call_entry ? "SNIPER CALL  — Zone retest confirmed" : liq_put_entry ? "SNIPER PUT   — Zone retest confirmed" : show_zones ? "Watching for zone retest..." : "Enable Liquidity Zones to activate"
-    color  sniper_col = liq_call_entry ? txt_bull : liq_put_entry ? txt_bear : txt_neut
-    table.cell(dashTable, 1, 37, sniper_txt, text_color=sniper_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 0, 37, " SL ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    float dash_sl  = last_entry_bias == "CALL" ? call_sl  : last_entry_bias == "PUT" ? put_sl  : na
+    float dash_tp1 = last_entry_bias == "CALL" ? call_tp1 : last_entry_bias == "PUT" ? put_tp1 : na
+    float dash_tp2 = last_entry_bias == "CALL" ? call_tp2 : last_entry_bias == "PUT" ? put_tp2 : na
+    float dash_tp3 = last_entry_bias == "CALL" ? call_tp3 : last_entry_bias == "PUT" ? put_tp3 : na
+    table.cell(dashTable, 1, 37, na(dash_sl) ? "—" : str.tostring(dash_sl, "#.##"), text_color=gate_fail, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 37, "RR", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 37, "1:" + str.tostring(rr_ratio, "#.#"), text_color=rr_ratio >= 1.5 ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
-    table.cell(dashTable, 0, 38, " BREAK ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 0, 38, " TP1/2/3 ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
     table.merge_cells(dashTable, 1, 38, 3, 38)
-    string break_txt = liq_call_break ? "BULL BREAK  — Resistance taken, momentum" : liq_put_break ? "BEAR BREAK  — Support lost, momentum" : show_zones ? "No zone break this bar" : "—"
-    color  break_col = liq_call_break ? txt_bull : liq_put_break ? txt_bear : txt_neut
-    table.cell(dashTable, 1, 38, break_txt, text_color=break_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    string tp_text = na(dash_tp1) ? "—" : str.tostring(dash_tp1, "#.##") + "  /  " + str.tostring(dash_tp2, "#.##") + "  /  " + str.tostring(dash_tp3, "#.##")
+    color  tp_col  = last_entry_bias == "CALL" ? txt_bull : last_entry_bias == "PUT" ? txt_bear : txt_neut
+    table.cell(dashTable, 1, 38, tp_text, text_color=tp_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
-    table.cell(dashTable, 0, 39, " ZONES ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
-    table.merge_cells(dashTable, 1, 39, 3, 39)
+    table.merge_cells(dashTable, 0, 39, 3, 39)
+    table.cell(dashTable, 0, 39, " LIQUIDITY ZONES (Sniper Engine) ", text_color=color.new(color.yellow, 10), text_size=size.small, bgcolor=color.new(#2a2e39, 30), text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 40, " SNIPER ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 40, 3, 40)
+    string sniper_txt = sovereign_flip_call ? "H4 SOVEREIGN FLIP — CALL (biggest signal)" : sovereign_flip_put ? "H4 SOVEREIGN FLIP — PUT (biggest signal)" : mtf_flip_call ? "MTF FLIP CALL — M15/H1 trail flipped" : mtf_flip_put ? "MTF FLIP PUT — M15/H1 trail flipped" : trail_flip_call ? "TRAIL FLIP CALL — new regime, ride it" : trail_flip_put ? "TRAIL FLIP PUT — new regime, ride it" : liq_call_entry ? "SNIPER CALL — Zone retest confirmed" : liq_put_entry ? "SNIPER PUT — Zone retest confirmed" : show_zones ? "Watching..." : "Enable Liquidity Zones for zone snipers"
+    color  sniper_col = sovereign_flip_call or mtf_flip_call or trail_flip_call or liq_call_entry ? txt_bull : sovereign_flip_put or mtf_flip_put or trail_flip_put or liq_put_entry ? txt_bear : txt_neut
+    table.cell(dashTable, 1, 40, sniper_txt, text_color=sniper_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 41, " BREAK ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 41, 3, 41)
+    string break_txt = liq_call_break ? "BULL BREAK — Resistance taken, momentum" : liq_put_break ? "BEAR BREAK — Support lost, momentum" : show_zones ? "No zone break this bar" : "—"
+    color  break_col = liq_call_break ? txt_bull : liq_put_break ? txt_bear : txt_neut
+    table.cell(dashTable, 1, 41, break_txt, text_color=break_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 42, " ZONES ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 42, 3, 42)
     string zones_txt = show_zones ? (str.tostring(zones.size()) + " active zones  •  Bull: " + (bull_break_signal ? "BRK" : bull_retest_signal ? "RET" : "—") + "  Bear: " + (bear_break_signal ? "BRK" : bear_retest_signal ? "RET" : "—")) : "OFF — Enable in section 2"
-    table.cell(dashTable, 1, 39, zones_txt, text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 1, 42, zones_txt, text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
 else if not dashOn and not na(dashTable)
-    table.clear(dashTable, 0, 0, 3, 39)
+    table.clear(dashTable, 0, 0, 3, 42)
     dashTable := na
     prevPlace := ""
 
@@ -1439,6 +1526,7 @@ trendLabel(int t) =>
     t == 1 ? "BULL" : t == -1 ? "BEAR" : "NEUT"
 
 tronAlert(string sigType, string bias, float confPct) =>
+    bool is_rf      = trade_mode == "Rise/Fall"
     string strike   = bias == "CALL" ? str.tostring(call_strike, "#.##") : str.tostring(put_strike, "#.##")
     string sl_str   = bias == "CALL" ? str.tostring(call_sl,  "#.##") : str.tostring(put_sl,  "#.##")
     string tp1_str  = bias == "CALL" ? str.tostring(call_tp1, "#.##") : str.tostring(put_tp1, "#.##")
@@ -1447,6 +1535,9 @@ tronAlert(string sigType, string bias, float confPct) =>
     string conf_b   = bias == "CALL" ? ("Bull " + str.tostring(math.round(bull_conf_pct)) + "% | Bear " + str.tostring(math.round(bear_conf_pct)) + "%") : ("Bear " + str.tostring(math.round(bear_conf_pct)) + "% | Bull " + str.tostring(math.round(bull_conf_pct)) + "%")
     string mtf_str  = (mtf_bull_conf or mtf_bear_conf) ? "ALIGNED" : "PARTIAL"
     string qual_str = spatial_quality ? "KEY LEVEL" : "OPEN SPACE"
+    string delta_str  = bias == "CALL" ? str.tostring(call_delta, "#.##") : str.tostring(put_delta, "#.##")
+    string rstr_str   = str.tostring(math.round(math.abs(regime_strength))) + "% | " + regime_quality + " | " + str.tostring(regime_bar_count) + " bars"
+    string rf_dir   = bias == "CALL" ? "RISE" : "FALL"
     string line1    = "ABSOLUTE DOLLAR INTELLIGENCE\n"
     string line2    = sigType + " -- " + syminfo.ticker + " | " + timeframe.period + "m\n\n"
     string line3    = "FRACTAL 4-LAYER SYNC\n"
@@ -1459,14 +1550,12 @@ tronAlert(string sigType, string bias, float confPct) =>
     string line10   = "Structure:  " + (bullBOS ? "Bullish BOS" : bearBOS ? "Bearish BOS" : "Neutral") + "\n"
     string line11   = "VWAP:       " + (vwapBullish ? "Bullish" : vwapBearish ? "Bearish" : "Neutral") + "\n"
     string line12   = "Fib:        " + (fibBullish ? "Bullish" : fibBearish ? "Bearish" : "Neutral") + "\n\n"
-    string delta_str  = bias == "CALL" ? str.tostring(call_delta, "#.##") : str.tostring(put_delta, "#.##")
-    string rstr_str   = str.tostring(math.round(math.abs(regime_strength))) + "% | " + regime_quality + " | " + str.tostring(regime_bar_count) + " bars"
     string line13   = "BIAS: " + bias + " -- " + str.tostring(math.round(confPct)) + "% conf | MTF: " + mtf_str + " | " + qual_str + "\n\n"
-    string line14   = "VANILLA OPTIONS SETUP\n"
-    string line15   = "Strike: " + strike + " (" + strike_mode + ")  Expiry: " + str.tostring(rec_expiry) + "m\n"
-    string line16   = "Entry:  " + str.tostring(close, "#.##") + "\n"
-    string line17   = "SL:     " + sl_str + "  RR: 1:" + str.tostring(rr_ratio, "#.#") + "\n"
-    string line18   = "TP1/2/3: " + tp1_str + " / " + tp2_str + " / " + tp3_str + "\n\n"
+    string line14   = is_rf ? "RISE/FALL SETUP\n" : "VANILLA OPTIONS SETUP\n"
+    string line15   = is_rf ? ("Direction: " + rf_dir + "  Expiry: " + str.tostring(rec_expiry) + "m  Spot: " + str.tostring(close, "#.##") + "\n") : ("Strike: " + strike + " (" + strike_mode + ")  Expiry: " + str.tostring(rec_expiry) + "m\n")
+    string line16   = is_rf ? ("SL ref: " + sl_str + "  RR: 1:" + str.tostring(rr_ratio, "#.#") + "\n") : ("Entry:  " + str.tostring(close, "#.##") + "\n")
+    string line17   = is_rf ? ("TP ref: " + tp1_str + " / " + tp2_str + "\n") : ("SL:     " + sl_str + "  RR: 1:" + str.tostring(rr_ratio, "#.#") + "\n")
+    string line18   = is_rf ? "\n" : ("TP1/2/3: " + tp1_str + " / " + tp2_str + " / " + tp3_str + "\n\n")
     string line19   = "REGIME: " + rstr_str + "\n"
     string line20   = "IV: " + str.tostring(math.round(iv_proxy * 100)) + "%  Delta: " + delta_str + "  ATR: " + str.tostring(current_atr, "#.####")
     line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19 + line20
@@ -1504,6 +1593,20 @@ if liq_call_break
 if liq_put_break
     alert(tronAlert("⚡ PUT BREAK — Zone Momentum",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
 
+// Trail Flip Sniper alerts — highest-conviction entries, regime just changed
+if sovereign_flip_call
+    alert(tronAlert("⚡ H4 SOVEREIGN FLIP — CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if sovereign_flip_put
+    alert(tronAlert("⚡ H4 SOVEREIGN FLIP — PUT",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
+if mtf_flip_call and not sovereign_flip_call
+    alert(tronAlert("⚡ MTF FLIP CALL — M15/H1 Trail", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if mtf_flip_put and not sovereign_flip_put
+    alert(tronAlert("⚡ MTF FLIP PUT — M15/H1 Trail",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
+if trail_flip_call and not sovereign_flip_call and not mtf_flip_call
+    alert(tronAlert("⚡ TRAIL FLIP CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if trail_flip_put and not sovereign_flip_put and not mtf_flip_put
+    alert(tronAlert("⚡ TRAIL FLIP PUT",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
+
 // Static alertcondition() entries kept for TradingView's Alert dialog dropdown
 alertcondition(final_call_entry,    title="Vanilla Call Entry",      message="TRON GLASSBOX: CALL ENTRY")
 alertcondition(final_put_entry,     title="Vanilla Put Entry",       message="TRON GLASSBOX: PUT ENTRY")
@@ -1519,3 +1622,9 @@ alertcondition(liq_call_entry,      title="Sniper Call Entry",       message="TR
 alertcondition(liq_put_entry,       title="Sniper Put Entry",        message="TRON GLASSBOX: SNIPER PUT — Zone Retest")
 alertcondition(liq_call_break,      title="Call Zone Break",         message="TRON GLASSBOX: CALL BREAK — Zone Momentum")
 alertcondition(liq_put_break,       title="Put Zone Break",          message="TRON GLASSBOX: PUT BREAK — Zone Momentum")
+alertcondition(trail_flip_call,     title="Trail Flip Call",         message="TRON GLASSBOX: TRAIL FLIP CALL")
+alertcondition(trail_flip_put,      title="Trail Flip Put",          message="TRON GLASSBOX: TRAIL FLIP PUT")
+alertcondition(mtf_flip_call,       title="MTF Flip Call (M15/H1)",  message="TRON GLASSBOX: MTF FLIP CALL — M15/H1 Trail")
+alertcondition(mtf_flip_put,        title="MTF Flip Put (M15/H1)",   message="TRON GLASSBOX: MTF FLIP PUT — M15/H1 Trail")
+alertcondition(sovereign_flip_call, title="H4 Sovereign Flip Call",  message="TRON GLASSBOX: H4 SOVEREIGN FLIP — CALL")
+alertcondition(sovereign_flip_put,  title="H4 Sovereign Flip Put",   message="TRON GLASSBOX: H4 SOVEREIGN FLIP — PUT")
