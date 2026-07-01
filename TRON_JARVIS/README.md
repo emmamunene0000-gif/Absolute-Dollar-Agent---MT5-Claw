@@ -41,9 +41,10 @@ The marriage of both is **Absolute Dollar Intelligence** — a system that sees 
 │  • VWAP Regime  │              │  • MT5 bridge (future)            │
 │  • Fib Bands    │              │  • Tap-to-trade mini app (future) │
 │  • Volume Prof  │              │                                   │
-│  • Confidence   │              │  Human-in-loop: Jarvis recommends,│
-│                 │              │  operator approves, Deriv executes│
-│  Emits:         │              └───────────────────────────────────┘
+│  • Liquidity    │              │  Human-in-loop: Jarvis recommends,│
+│  • Confidence   │              │  operator approves, Deriv executes│
+│                 │              └───────────────────────────────────┘
+│  Emits:         │
 │  Formatted      │
 │  Telegram alerts│
 │  (zero latency) │
@@ -58,7 +59,7 @@ TRON is **100% stateless**. It does not know if you are in a trade. It does not 
 
 > *"Given the current market state across all timeframes, what does the architecture see?"*
 
-### The 7 Detection Engines
+### The 8 Detection Engines
 
 | Engine | What it computes | Key output |
 |--------|-----------------|------------|
@@ -68,7 +69,8 @@ TRON is **100% stateless**. It does not know if you are in a trade. It does not 
 | VWAP Regime | Swing-anchored adaptive VWAP | `vwapBullish`, `vwapBearish` |
 | Fib Bands | EMA-of-EMA basis + ATR fib multiples | `fibBullish`, `fibBearish` |
 | Volume Profile | Session POC/VAH/VAL (8 session types) | `vp_bullish_conf`, `vp_bearish_conf` |
-| Confidence Engine | Weighted scoring of all 6 above | `bull_conf_pct`, `bear_conf_pct` |
+| **Liquidity Zones** | **Pivot-based S/R zones, break + retest detection** | **`liq_call_entry`, `liq_put_entry` (SNIPER)** |
+| Confidence Engine | Weighted scoring of all above | `bull_conf_pct`, `bear_conf_pct` |
 
 ### Confidence Weights
 
@@ -83,39 +85,78 @@ Volume Profile  0.5 pts
 Max             5.5 pts → normalized to %
 ```
 
-### The 4-Layer Fractal Sync (your Sovereign framework)
+### The 4-Layer Fractal Sync (Sovereign Framework)
 
 ```
 L1 Sovereign (H4)  — macro bias, never fight this
 L2 Anchor    (H1)  — intraday direction
-L3 Filter   (M15)  — trade-direction confirmation  
+L3 Filter   (M15)  — trade-direction confirmation
 L4 Exec    (M5/M1) — entry timing (chart timeframe)
 ```
 
 All 4 layers must align for maximum conviction. TRON shows sync status live on the dashboard.
 
-### Signal Types
+### Signal Hierarchy (most to least conviction)
 
 ```
-⚡ ENTRY            Full confluence met — ATM trigger + confidence gate passed
-🔄 CONTINUATION     Momentum re-confirmed in trend direction (Brain decides: new entry or scale-in)
-🔀 REGIME SHIFT     Environment just changed (edge-only, single bar, not persistent)
-✅ CONFIDENCE PASS  Confidence threshold just crossed — watch for trigger
-🏗 BOS              Break of structure confirmed
+⚡ SNIPER ENTRY       Liquidity zone retest — price returning to broken level
+                      Trail + confidence gate BOTH required
+                      Highest R:R — institutional zones act as magnets
+
+⚡ ENTRY              Full ATM confluence met — all detection engines aligned
+                      Confidence gate + deduplication passed
+
+⚡ BREAK MOMENTUM     Zone structural break with trail confirmation
+                      Continuation type — Brain decides: new entry or add
+
+🔄 CONTINUATION       Momentum re-confirmed in trend direction
+                      Brain decides: new entry or scale-in
+
+🔀 REGIME SHIFT       Environment just changed (edge-only, single bar, not persistent)
+                      Driven by: trail flip, VWAP edge, Fib edge, BOS, zone break
+
+✅ CONFIDENCE PASS    Confidence threshold just crossed — watch for trigger
+
+🏗 BOS               Break of structure confirmed
 ```
+
+### Liquidity Zone Sniper Engine (detailed)
+
+Zones are drawn at swing pivots (configurable lookback). When price breaks through a zone, the zone changes state from **active** to **broken**. A broken zone that price returns to becomes a **retest** — this is the sniper entry.
+
+```
+H-LIQ zone (resistance):
+  Break upward  → bull_break_signal  → potential CALL BREAK momentum
+  Retest back   → bull_retest_signal → SNIPER CALL (former resistance now support)
+
+L-LIQ zone (support):
+  Break downward → bear_break_signal  → potential PUT BREAK momentum + bearish regime flag
+  Retest back    → bear_retest_signal → SNIPER PUT (former support now resistance)
+```
+
+**Why these are the best entries:**
+- Institutional desks defend broken levels on retests
+- Stop-loss hunters get shaken out on the initial break; retests offer cleaner fills
+- The zone itself acts as natural SL reference — price failing to hold the retest = strong invalidation signal
+- Sniper entries require both trail direction AND confidence gate, so they carry full architectural confirmation
+
+**Zone breaks also drive regime exits:**
+When support breaks (`bear_break_signal`) the system flags a **bearish regime shift** — any open CALL positions should be exited/defended. Same for `bull_break_signal` → **bullish regime shift** flags exit of PUT positions.
 
 ### Vanilla Options Engine
 
 ```
 Strike Modes:
-  ATM      current price rounded to tick
+  ATM      current price (default — tight P/L, fast expiry)
   ITM      deeper strike, higher probability, lower payout
   OTM      aggressive, higher payout, lower probability
   Dynamic  confidence-adaptive: High (≥85%) → OTM | Med (≥70%) → ATM | Low → ITM
 
-Expiry Formula:
-  rec_expiry = tf_min × expiry_base × (1 + trend_magnitude×2 + vol_norm)
-  Scales automatically with trend strength and volatility.
+Expiry Formula (RR-based, scalp-optimised):
+  rec_expiry = bars_to_TP × tf_min × regime_adj
+  bars_to_TP = rr_tp_mult (ATR multiples to target, default 1.5)
+  regime_adj = 0.75 (3+ layers aligned) | 1.0 (2 layers) | 1.3 (1 layer)
+  Capped between min_expiry (2m default) and max_expiry (30m default)
 ```
 
 ---
@@ -124,42 +165,184 @@ Expiry Formula:
 
 Alerts fire directly from TradingView to Telegram via webhook. No relay server. No parser. The message IS the briefing.
 
-### TradingView Alert Setup
+### TradingView Alert Setup (Step-by-Step)
 
+**1. Open TradingView → Alerts panel (clock icon)**
+
+**2. Create Alert on TRON GBX indicator:**
 ```
-Alert Message:  {{alert_message}}
-Webhook URL:    https://api.telegram.org/botYOUR_BOT_TOKEN/sendMessage
-                (add ?chat_id=YOUR_CHAT_ID&text={{alert_message}})
-Frequency:      Once Per Bar Close
+Condition:    TRON — GLASSBOX SIGNAL GENERATOR
+              Select any alertcondition from dropdown:
+              • "Vanilla Call Entry"
+              • "Vanilla Put Entry"
+              • "Sniper Call Entry"        ← new, highest priority
+              • "Sniper Put Entry"         ← new, highest priority
+              • "Call Zone Break"
+              • "Put Zone Break"
+              • "Bullish Regime Shift"
+              • "Bearish Regime Shift"
+              • "Call Continuation"
+              • "Put Continuation"
+              • "Call Confidence Pass"
+              • "Put Confidence Pass"
+              • "Bullish BOS"
+              • "Bearish BOS"
+
+Alert Message: {{alert_message}}
+Frequency:     Once Per Bar Close
 ```
+
+**3. OR: Create one alert on ANY condition, set message to `{{alert_message}}`**
+
+The `alert()` calls inside TRON already format the full Telegram briefing. They fire on every signal type automatically when the alert is triggered.
+
+**4. Webhook URL for Telegram:**
+```
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage?chat_id=<CHAT_ID>&text={{alert_message}}
+```
+
+Replace `<YOUR_BOT_TOKEN>` with your bot token from @BotFather and `<CHAT_ID>` with your channel or personal chat ID.
+
+**5. Test it:**
+- Force an alert on a test chart (lower timeframe with active signals)
+- Confirm message lands in Telegram within seconds of bar close
 
 ### What a Signal Looks Like in Telegram
 
+**Regular Entry:**
 ```
-🚀ABSOLUTE💰DOLLAR💰INTELLIGENCE💯
-📊 ⚡ PUT ENTRY — R_75 | 1m
+ABSOLUTE DOLLAR INTELLIGENCE
+⚡ CALL ENTRY -- R_75 | 1m
 
 FRACTAL 4-LAYER SYNC
-L1 Sovereign (H4): 🔴 BEAR
-L2 Anchor   (H1):  🔴 BEAR
-L3 Filter  (M15):  🔴 BEAR
-L4 Exec    (M5):   🔴 BEAR
+L1 Sovereign H4: BULL
+L2 Anchor    H1: BULL
+L3 Filter   M15: BULL
+L4 Exec      M5: BULL
 
 CORE SIGNALS
-Confidence: Bear 78% | Bull 32%
-Structure:  Bearish BOS
-VWAP:       Bearish
-Fib:        Bearish
+Confidence: Bull 78% | Bear 32%
+Structure:  Bullish BOS
+VWAP:       Bullish
+Fib:        Bullish
 
-BIAS: 📉 PUT — 78% confidence
+BIAS: CALL -- 78% conf | MTF: ALIGNED | KEY LEVEL
 
 VANILLA OPTIONS SETUP
-Strike:  7909.64 (Dynamic)
-Expiry:  8 minutes
-Entry:   7912.40
+Strike: 7909.64 (ATM)  Expiry: 3m
+Entry:  7912.40
+SL:     7908.20  RR: 1:1.5
+TP1/2/3: 7915.20 / 7918.00 / 7922.40
 
-Signal: ⚡ PUT ENTRY | Gate: 60% | MTF: ALIGNED ✅
+REGIME: 65% | ALIGNED | 8 bars
+IV: 42%  Delta: 0.52  ATR: 3.2100
 ```
+
+**Sniper Entry (zone retest):**
+```
+ABSOLUTE DOLLAR INTELLIGENCE
+⚡ SNIPER CALL — Zone Retest -- R_75 | 1m
+
+FRACTAL 4-LAYER SYNC
+L1 Sovereign H4: BULL
+...
+
+BIAS: CALL -- 82% conf | MTF: ALIGNED | KEY LEVEL
+...
+```
+
+---
+
+## Operating TRON — Masterclass
+
+### Recommended Settings by Trading Mode
+
+**R_75 Scalping (1m/5m chart):**
+```
+Claw Mode:        Moderate (60%)
+Strike Mode:      ATM
+Max Expiry:       15m
+Spatial Filter:   OFF (ATM breakouts naturally away from trail)
+Show Zones:       ON  (activate sniper engine)
+Dedup Bars:       3
+MTF Trail:        55/14/1.25 (defaults)
+```
+
+**XAUUSD Swing (15m/1h chart):**
+```
+Claw Mode:        Conservative (80%)
+Strike Mode:      Dynamic
+Max Expiry:       30m
+Spatial Filter:   ON (strong zones matter more on XAUUSD)
+Show Zones:       ON
+Dedup Bars:       5
+```
+
+**GBPUSD News-Driven (5m/15m chart):**
+```
+Claw Mode:        Aggressive (40%) during news, Moderate otherwise
+Strike Mode:      ATM
+Max Expiry:       20m
+Show Zones:       ON
+```
+
+### Reading the Cognitive Dashboard
+
+The dashboard has 8 sections:
+
+| Section | What it shows |
+|---------|--------------|
+| Market Intelligence | Current bias, active signal, waiting condition |
+| Fractal H1→M15→Now | H1 intraday truth, M15 tactical alignment, structure |
+| CALL breakdown | Per-factor confidence scoring for bullish side |
+| PUT breakdown | Per-factor confidence scoring for bearish side |
+| Vanilla Options | Live strikes, expiry, continuation status |
+| Execution | ATM trigger status, direction gate, confidence gate |
+| Regime Intelligence | Strength score, IV proxy, RR ratio, delta |
+| Signal P&L | Last entry vs current price (open signal tracker) |
+| **Liquidity Zones** | **Sniper status, break status, zone count** |
+
+### The Sniper Trade — Operating Procedure
+
+1. Enable **Show Liquidity Zones** in section 2 inputs
+2. Watch for **gold SNIPER CALL/PUT labels** on chart
+3. When sniper fires:
+   - Verify L1 Sovereign (H4) agrees with direction
+   - Check dashboard: SNIPER CALL or SNIPER PUT shows in "I AM" row
+   - Strike and Expiry pre-calculated — use them directly
+   - SL = zone failure level (if price re-enters broken zone → invalidation)
+4. Set TradingView alert on "Sniper Call Entry" / "Sniper Put Entry" in dropdown
+
+### Regime Exit Signals — What to Watch For
+
+TRON emits **regime shift alerts** on these events:
+
+| Trigger | Meaning | Action |
+|---------|---------|--------|
+| Trail flip | Price crossed and closed past the trail | Flip direction bias |
+| VWAP edge | VWAP swing anchor changed direction | Reassess intraday bias |
+| Fib edge | Fib trend direction changed | Secondary confirmation of flip |
+| BOS (structure) | Price broke key structure level | Strong conviction regime change |
+| **Zone break** | **S or R zone structurally broken** | **Strongest exit signal — zones are where institutions set orders** |
+
+**Zone breaks are the most actionable regime exit:** when support breaks below (`bear_break_signal`), the system immediately flags bearish regime shift. Any CALL position held past this point has lost its structural backing.
+
+### Signal Deduplication
+
+TRON tracks the last 3 entry bars per direction. Same-direction entries within `dedup_bars` (default 3) are suppressed. This prevents the system spamming you on ranging markets. Continuation signals are NOT deduplicated — those are intentional momentum confirmations the Brain uses for scale-in decisions.
+
+### Confidence Gate Logic
+
+```
+Confidence Gate = (bull_score / bull_max) × 100 ≥ conf_threshold
+
+Conservative  → 80%  (only SOVEREIGN conditions)
+Moderate      → 60%  (healthy daily setups)
+Aggressive    → 40%  (momentum plays, news)
+Custom        → your value
+```
+
+A signal can fire ATM trigger without passing confidence — those show as **small unconfirmed dots** (grey circles above/below bar). Watch these when confidence is climbing toward the threshold.
 
 ---
 
@@ -177,7 +360,8 @@ position_ledger = {
     "entry_time": datetime,
     "strike": float,
     "expiry": datetime,
-    "scale_count": int
+    "scale_count": int,
+    "entry_type": "SNIPER" | "ENTRY" | "BREAK" | "CONTINUATION"
 }
 
 episodic_memory = [
@@ -185,6 +369,7 @@ episodic_memory = [
         "event": "ENTRY",
         "bias": "PUT",
         "confidence": 78,
+        "entry_type": "SNIPER",
         "architecture_state": { ... full snapshot ... },
         "outcome": "WIN | LOSS | PENDING"
     }
@@ -194,16 +379,16 @@ episodic_memory = [
 ### Jarvis Telegram Briefing (scheduled + on-signal)
 
 ```
-🧠 JARVIS MARKET BRIEF — R_75 | 01:15 UTC
+JARVIS MARKET BRIEF — R_75 | 01:15 UTC
 
-H4 sovereign is bearish. Price has been in a clean distribution 
-phase since the London close. M15 BOS at 7920 confirmed. VWAP 
-and Fib both bear-aligned. Waiting on M5 continuation for a 
-PUT entry at dynamic strike 7890.
+H4 sovereign is bearish. Price has been in a clean distribution
+phase since the London close. M15 BOS at 7920 confirmed. VWAP
+and Fib both bear-aligned. L-LIQ zone at 7890 is broken and
+price is retesting it now. Waiting on sniper PUT confirmation.
 
 Active position: None
 Confidence gate: 60% (Moderate)
-Last signal: PUT ENTRY 23:42 UTC (WIN +$12.40)
+Last signal: SNIPER CALL 23:42 UTC (WIN +$12.40)
 ```
 
 ### Execution Flow (Human-in-Loop)
@@ -213,7 +398,7 @@ Last signal: PUT ENTRY 23:42 UTC (WIN +$12.40)
 2. Jarvis sends Telegram brief with tap-to-trade button
 3. Operator reviews, taps EXECUTE
 4. Order sent to Deriv API with expiry based on rec_expiry
-5. Jarvis monitors position, sends exit alert at expiry
+5. Jarvis monitors position, sends exit alert at expiry or regime shift
 ```
 
 ### Later: Full Autonomy Mode
@@ -258,7 +443,7 @@ TRON_JARVIS/
 | Pair | Mode | Why |
 |------|------|-----|
 | R_75 (Volatility 75) | All signals — primary | High volatility, clean structure, 24/7 |
-| XAUUSD | Sniper mode only | Strong trend days, London/NY session |
+| XAUUSD | Sniper mode + Conservative | Strong trend days, London/NY session |
 | GBPUSD | ATM + Smart | News-driven momentum, predictable BOS |
 
 ---
@@ -287,6 +472,8 @@ Execution  → Human-in-loop now. Autonomous later.
 
 > "Later we can build a tap-to-trade app... a telegram alert... if you execute, order is sent to Deriv/MT5 with an expiry based on the signal event."
 
+> "Do we have liquidity trail entries? Those are super entries and they guide the rest especially when it comes to exits and regime shifts, we can with confidence consider exits as well."
+
 ---
 
 ## Build Sequence
@@ -297,6 +484,17 @@ Execution  → Human-in-loop now. Autonomous later.
   - [x] 4-layer fractal sync (H4/H1/M15/M5)
   - [x] Edge-detected regime shifts (no spam)
   - [x] Telegram-native formatted alerts (zero middleware)
+  - [x] RR-based expiry formula (ATR velocity model, scalp-capped)
+  - [x] Regime strength scoring + quality tiers (SOVEREIGN/ALIGNED/MIXED/OPPOSED)
+  - [x] IV proxy + delta approximation
+  - [x] PnL tracker (last entry vs current price)
+  - [x] Signal deduplication ring buffer
+  - [x] Spatial confluence filter (optional)
+  - [x] **Liquidity Zone Sniper Engine** — break + retest detection
+  - [x] **Sniper entries wired into signal detection + alerts**
+  - [x] **Zone breaks wired into regime shift exits**
+  - [x] 14 alertcondition() entries (full dropdown in TradingView)
+  - [x] Cognitive dashboard (40 rows — full architecture state at a glance)
 - [ ] Phase 2 — Jarvis Brain (Python)
   - [ ] Deriv API data feed
   - [ ] Tron-parity signal engine

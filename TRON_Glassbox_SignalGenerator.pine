@@ -130,20 +130,23 @@ fib_weight      = input.float(0.5, "Fib Weight", minval=0, maxval=3.0, step=0.25
 vp_weight       = input.float(0.5, "Volume Profile Weight", minval=0, maxval=3.0, step=0.25, group=g_conf)
 
 // --- 10. Vanilla Options Engine ---
-strike_mode     = input.string("Dynamic", "Strike Selection", options=["ATM", "ITM", "OTM", "Dynamic"], group=g_van, tooltip="Dynamic: High conf=OTM, Med=ATM, Low=ITM")
+strike_mode     = input.string("ATM", "Strike Selection", options=["ATM", "ITM", "OTM", "Dynamic"], group=g_van, tooltip="ATM = at current price. Dynamic: High conf=OTM, Med=ATM, Low=ITM")
 itm_mult        = input.float(0.5, "ITM Distance (ATR x)", minval=0.1, step=0.1, group=g_van)
 otm_mult        = input.float(1.0, "OTM Distance (ATR x)", minval=0.1, step=0.1, group=g_van)
-min_expiry      = input.int(1, "Min Expiry (minutes)", minval=1, group=g_van)
-max_expiry      = input.int(60, "Max Expiry (minutes)", minval=1, group=g_van)
-expiry_base     = input.int(5, "Base Bars Multiplier", minval=1, group=g_van, tooltip="Expiry = Base x timeframe x trend/vol factor")
+rr_tp_mult      = input.float(1.5, "RR TP Target (ATR x)", minval=0.5, step=0.25, group=g_van, tooltip="TP = entry ± (ATR x this mult). Expiry derived from how many bars at current ATR/bar velocity to reach TP.")
+rr_sl_mult      = input.float(1.0, "RR SL Distance (ATR x)", minval=0.25, step=0.25, group=g_van)
+min_expiry      = input.int(2, "Min Expiry (minutes)", minval=1, group=g_van)
+max_expiry      = input.int(30, "Max Expiry (minutes — scalp cap)", minval=1, group=g_van)
 show_strikes    = input.bool(true, "Show Strike Levels", group=g_van)
 show_expiry     = input.bool(true, "Show Expiry Labels", group=g_van)
 
 // --- 11. Regime Shift Detection (Brain decides if/how to act on these) ---
-exit_on_trail   = input.bool(true, "Flag Trail Flip", group=g_exit)
-exit_on_vwap    = input.bool(true, "Flag VWAP Regime Shift", group=g_exit)
-exit_on_fib     = input.bool(true, "Flag Fib Regime Shift", group=g_exit)
+exit_on_trail   = input.bool(true,  "Flag Trail Flip", group=g_exit)
+exit_on_vwap    = input.bool(true,  "Flag VWAP Regime Shift", group=g_exit)
+exit_on_fib     = input.bool(true,  "Flag Fib Regime Shift", group=g_exit)
 exit_on_struct  = input.bool(false, "Flag Structure Break", group=g_exit)
+spatial_filter  = input.bool(false, "Spatial Confluence Filter (entry near key level)", group=g_exit, tooltip="When ON, entries require price to be within 1.5 ATR of Trail or Volume POC. OFF = all confluent entries pass.")
+dedup_bars      = input.int(3, "Min Bars Between Same-Direction Entries", minval=1, maxval=20, group=g_exit)
 
 // --- 12. Visual & Longevity ---
 signal_length   = input.int(34, "Signal Smoothing", minval=1, maxval=200, group=g_vis)
@@ -896,13 +899,53 @@ else if strike_mode == "Dynamic"
     put_strike := bear_conf_pct >= 85 and mtf_bear_conf ? put_strike_otm : bear_conf_pct >= 70 ? put_strike_atm : put_strike_itm
 
 // =========================================================================
-// STEP 12: EXPIRY ADVISOR
+// STEP 11b: REGIME STRENGTH (replaces binary flip with scored 0-100 value)
 // =========================================================================
-float tf_min = timeframe.in_seconds(timeframe.period) / 60.0
-float trend_mag = math.abs(bull_conf_pct - bear_conf_pct) / 100.0
-float vol_norm = math.min(current_atr / close * 1000.0, 5.0)
-int rec_expiry = int(math.round(tf_min * expiry_base * (1.0 + trend_mag * 2.0 + vol_norm)))
-rec_expiry := math.max(min_expiry, math.min(max_expiry, rec_expiry))
+// Consecutive bars in current trail direction — momentum continuity score
+var int regime_bar_count = 0
+regime_bar_count := ltf_trend == ltf_trend[1] ? regime_bar_count + 1 : 1
+
+// Distance from price to trail, normalized to ATR — how "committed" the regime is
+float trail_distance_atr = (close - ltf_trail) / math.max(current_atr, syminfo.mintick)
+float regime_strength_raw = math.min(math.abs(trail_distance_atr) * 25 + regime_bar_count * 2, 100.0)
+float regime_strength = ltf_trend == 1 ? regime_strength_raw : ltf_trend == -1 ? -regime_strength_raw : 0.0
+
+// Nested regime detection: H4/H1/M15 alignment gives 4 levels
+int sync_layers = (h4_trend == ltf_trend ? 1 : 0) + (h1_trend == ltf_trend ? 1 : 0) + (m15_trend == ltf_trend ? 1 : 0) + (m5_trend == ltf_trend ? 1 : 0)
+string regime_quality = sync_layers >= 4 ? "SOVEREIGN" : sync_layers >= 3 ? "ALIGNED" : sync_layers >= 2 ? "MIXED" : "OPPOSED"
+
+// =========================================================================
+// STEP 12: RR-BASED EXPIRY ADVISOR (scalping-optimised)
+// =========================================================================
+// Philosophy: expiry = time for price to travel from entry to TP at current
+// ATR-per-bar velocity. Keeps scalp expiries tight and volatility-aware.
+float tf_min       = timeframe.in_seconds(timeframe.period) / 60.0
+float atr_per_bar  = math.max(current_atr, syminfo.mintick)
+float tp_distance  = atr_per_bar * rr_tp_mult
+float bars_to_tp   = tp_distance / atr_per_bar
+// Regime tailwind: strong aligned regime → shorter expiry (momentum carries price faster)
+float regime_adj   = sync_layers >= 3 ? 0.75 : sync_layers >= 2 ? 1.0 : 1.3
+int rec_expiry     = int(math.round(bars_to_tp * tf_min * regime_adj))
+rec_expiry        := math.max(min_expiry, math.min(max_expiry, rec_expiry))
+
+// RR levels (asset-agnostic ATR-based, used in alert and dashboard)
+float rr_ratio     = rr_tp_mult / rr_sl_mult
+
+// =========================================================================
+// STEP 12b: IMPLIED VOLATILITY PROXY + DELTA APPROXIMATION
+// =========================================================================
+// IV proxy: annualise ATR-based historical vol (ATR/price × sqrt(bars/year))
+float bars_per_year = 252.0 * (1440.0 / math.max(tf_min, 1.0))
+float iv_proxy      = (current_atr / close) * math.sqrt(bars_per_year)
+
+// Approximate delta for current strike vs ATM using simplified Black-Scholes d1:
+// delta ≈ 0.5 + 0.4 × (ITM/OTM offset / (IV × sqrt(T)))
+// T = expiry as fraction of year
+float T_years       = (rec_expiry / 60.0) / (252.0 * 6.5)
+float call_d1       = (math.log(close / math.max(call_strike, syminfo.mintick)) + 0.5 * iv_proxy * iv_proxy * T_years) / math.max(iv_proxy * math.sqrt(T_years), 0.0001)
+float put_d1        = (math.log(close / math.max(put_strike,  syminfo.mintick)) + 0.5 * iv_proxy * iv_proxy * T_years) / math.max(iv_proxy * math.sqrt(T_years), 0.0001)
+float call_delta    = math.max(0.01, math.min(0.99, 0.5 + 0.4 * call_d1))
+float put_delta     = math.max(0.01, math.min(0.99, 0.5 - 0.4 * put_d1))
 
 // =========================================================================
 // STEP 13: STATELESS SIGNAL DETECTION (no position tracking — Brain's job)
@@ -917,25 +960,24 @@ bool gated_put_ATM  = trig_put_ATM  and trail_allows_short
 bool gated_call_smart = trig_call_smart and trail_allows_long
 bool gated_put_smart  = trig_put_smart  and trail_allows_short
 
-// --- Spatial Confluence Quality Filter ---
-// Entries suppressed when price is in dead-space (no key level within 0.5 ATR).
-// Asset-agnostic: trail level + volume POC cover both trending & ranging markets.
-float atr1 = current_atr * 0.5
-bool near_trail = math.abs(close - ltf_trail) <= atr1
-bool near_poc   = vpEnabled and not na(vp_currentPOC) and math.abs(close - vp_currentPOC) <= atr1
-bool spatial_quality = near_trail or near_poc
+// --- Spatial Confluence Quality Filter (optional, default OFF) ---
+// When enabled: requires price within 1.5 ATR of trail level or Volume POC.
+// Wider than 0.5 ATR so momentum breakouts still qualify.
+// Default OFF — all confluent entries pass. Enable to reduce dead-space entries.
+float atr_zone_width = current_atr * 1.5
+bool near_trail      = math.abs(close - ltf_trail) <= atr_zone_width
+bool near_poc        = vpEnabled and not na(vp_currentPOC) and math.abs(close - vp_currentPOC) <= atr_zone_width
+bool spatial_quality = not spatial_filter or near_trail or near_poc
 
-// --- Signal Deduplication ring buffer (last 3 entry bar indices) ---
-// Prevents repeat entry signals within min_bars_between bars of the same type.
-int min_bars_between = 3
+// --- Signal Deduplication ring buffer (last 3 entry bar indices per direction) ---
 var int call_bar_a = -999
 var int call_bar_b = -999
 var int call_bar_c = -999
 var int put_bar_a  = -999
 var int put_bar_b  = -999
 var int put_bar_c  = -999
-bool call_too_soon = (bar_index - call_bar_a) < min_bars_between or (bar_index - call_bar_b) < min_bars_between or (bar_index - call_bar_c) < min_bars_between
-bool put_too_soon  = (bar_index - put_bar_a)  < min_bars_between or (bar_index - put_bar_b)  < min_bars_between or (bar_index - put_bar_c)  < min_bars_between
+bool call_too_soon = (bar_index - call_bar_a) < dedup_bars or (bar_index - call_bar_b) < dedup_bars or (bar_index - call_bar_c) < dedup_bars
+bool put_too_soon  = (bar_index - put_bar_a)  < dedup_bars or (bar_index - put_bar_b)  < dedup_bars or (bar_index - put_bar_c)  < dedup_bars
 
 // Primary entry detection — pure confluence, zero position awareness
 bool final_call_entry = gated_call_ATM and bull_conf_pass and spatial_quality and not call_too_soon
@@ -959,28 +1001,48 @@ bool flip_bull = ltf_trend == 1  and ltf_trend[1] == -1
 bool flip_bear = ltf_trend == -1 and ltf_trend[1] == 1
 
 // Regime shifts — edge-only (no persistent-state spam)
+// Zone breaks included: support lost = bearish regime, resistance broken = bullish regime
 bool bearish_regime_shift = (exit_on_trail and flip_bear) or
      (exit_on_vwap and vwapBearish and not vwapBearish[1]) or
      (exit_on_fib  and fibBearish  and not fibBearish[1])  or
-     (exit_on_struct and bearBOS)
+     (exit_on_struct and bearBOS)                          or
+     (show_zones and bear_break_signal)
 bool bullish_regime_shift = (exit_on_trail and flip_bull) or
      (exit_on_vwap and vwapBullish and not vwapBullish[1]) or
      (exit_on_fib  and fibBullish  and not fibBullish[1])  or
-     (exit_on_struct and bullBOS)
+     (exit_on_struct and bullBOS)                          or
+     (show_zones and bull_break_signal)
 
-// Risk-aware SL / TP (ATR-based, asset-agnostic — CFD, Vanilla, Futures)
-float sl_atr_mult  = 1.5
-float tp1_atr_mult = 1.0
-float tp2_atr_mult = 2.0
-float tp3_atr_mult = 3.5
-float call_sl  = close - current_atr * sl_atr_mult
-float call_tp1 = close + current_atr * tp1_atr_mult
-float call_tp2 = close + current_atr * tp2_atr_mult
-float call_tp3 = close + current_atr * tp3_atr_mult
-float put_sl   = close + current_atr * sl_atr_mult
-float put_tp1  = close - current_atr * tp1_atr_mult
-float put_tp2  = close - current_atr * tp2_atr_mult
-float put_tp3  = close - current_atr * tp3_atr_mult
+// Liquidity Zone Sniper Entries — zone retest = price returning to broken level = institutional confirmation
+// These are the highest-conviction entries in the system. Trail + confidence must agree.
+bool liq_call_entry = show_zones and bull_retest_signal and trail_allows_long  and bull_conf_pass
+bool liq_put_entry  = show_zones and bear_retest_signal and trail_allows_short and bear_conf_pass
+
+// Zone Break Momentum — structural break with trail in same direction (continuation type)
+bool liq_call_break = show_zones and bull_break_signal and trail_allows_long
+bool liq_put_break  = show_zones and bear_break_signal and trail_allows_short
+
+// Risk-aware SL / TP (ATR RR model — asset-agnostic, CFD/Vanilla/Futures)
+float call_sl  = close - current_atr * rr_sl_mult
+float call_tp1 = close + current_atr * rr_tp_mult
+float call_tp2 = close + current_atr * rr_tp_mult * 2.0
+float call_tp3 = close + current_atr * rr_tp_mult * 3.5
+float put_sl   = close + current_atr * rr_sl_mult
+float put_tp1  = close - current_atr * rr_tp_mult
+float put_tp2  = close - current_atr * rr_tp_mult * 2.0
+float put_tp3  = close - current_atr * rr_tp_mult * 3.5
+
+// PnL tracker — must live after final_call/put_entry are declared
+var float last_entry_price = na
+var string last_entry_bias = ""
+if final_call_entry
+    last_entry_price := close
+    last_entry_bias  := "CALL"
+if final_put_entry
+    last_entry_price := close
+    last_entry_bias  := "PUT"
+float pnl_pts = na(last_entry_price) ? na : last_entry_bias == "CALL" ? close - last_entry_price : last_entry_price - close
+string pnl_label = na(pnl_pts) ? "—" : (pnl_pts >= 0 ? "+" : "") + str.tostring(pnl_pts, "#.##") + " pts (" + (pnl_pts >= 0 ? "WIN" : "LOSS") + ")"
 
 // =========================================================================
 // STEP 14: VISUAL OUTPUTS (VANILLA-SPECIFIC)
@@ -994,7 +1056,12 @@ plotshape(flip_bull ? ltf_trail : na, "Trail Flip Bull2", shape.diamond, locatio
 plotshape(flip_bear ? ltf_trail : na, "Trail Flip Bear",  shape.diamond, location.absolute, color.new(bear_color, 50), size=size.small)
 plotshape(flip_bear ? ltf_trail : na, "Trail Flip Bear2", shape.diamond, location.absolute, bear_color,                size=size.tiny)
 
-// Primary Entries - use label.new for dynamic text instead of plotshape
+// ATM raw trigger — shows every ATM crossover regardless of confidence gate
+// (small dot below/above bar so you can see what's being filtered vs confirmed)
+plotshape(gated_call_ATM and not final_call_entry, "ATM Call (unconfirmed)", shape.circle, location.belowbar, color.new(bull_color, 60), size=size.tiny)
+plotshape(gated_put_ATM  and not final_put_entry,  "ATM Put (unconfirmed)",  shape.circle, location.abovebar, color.new(bear_color, 60), size=size.tiny)
+
+// Confirmed entries — full confluence + dedup + spatial gate passed
 if final_call_entry
     label.new(bar_index, low, "CALL ENTRY\nStrike: " + str.tostring(call_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(bull_color, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
 if final_put_entry
@@ -1011,6 +1078,19 @@ if bearish_regime_shift
     label.new(bar_index, high, "BEARISH REGIME SHIFT", color=color.orange, textcolor=color.white, style=label.style_label_down, size=size.small)
 if bullish_regime_shift
     label.new(bar_index, low, "BULLISH REGIME SHIFT", color=color.orange, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// Liquidity Zone Sniper Entries — gold labels, highest conviction entries in the system
+// Price has returned to a broken level — institutions defend that level, edge is highest here
+if liq_call_entry
+    label.new(bar_index, low,  "SNIPER CALL\nStrike: " + str.tostring(call_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(color.yellow, 0), textcolor=color.black, style=label.style_label_up, size=size.small)
+if liq_put_entry
+    label.new(bar_index, high, "SNIPER PUT\nStrike: " + str.tostring(put_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(color.yellow, 0), textcolor=color.black, style=label.style_label_down, size=size.small)
+
+// Zone Break Momentum — structural break labels (lighter, continuation type)
+if liq_call_break and not liq_call_entry
+    label.new(bar_index, low,  "BREAK CALL", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+if liq_put_break and not liq_put_entry
+    label.new(bar_index, high, "BREAK PUT",  color=color.new(color.maroon, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
 // Live strike levels — always-on detection, not gated on a held position
 plot(show_strikes and trail_allows_long ? call_strike : na, "Call Strike (live)", color=color.new(bull_color, 50), style=plot.style_linebr, linewidth=2)
@@ -1142,7 +1222,7 @@ color gate_fail  = color.new(#ff0000, 20)
 color gate_warn  = color.new(#ffaa00, 20)
 
 string sys_bias    = ltf_trend == 1 ? "BULLISH" : ltf_trend == -1 ? "BEARISH" : "NEUTRAL"
-string sys_action  = final_call_entry ? "CALL SIGNAL" : final_put_entry ? "PUT SIGNAL" : continuation_call ? "CALL CONT." : continuation_put ? "PUT CONT." : "DETECTING"
+string sys_action  = liq_call_entry ? "SNIPER CALL" : liq_put_entry ? "SNIPER PUT" : final_call_entry ? "CALL SIGNAL" : final_put_entry ? "PUT SIGNAL" : liq_call_break ? "BREAK CALL" : liq_put_break ? "BREAK PUT" : continuation_call ? "CALL CONT." : continuation_put ? "PUT CONT." : "DETECTING"
 float  sys_conf    = ltf_trend == 1 ? bull_conf_pct : ltf_trend == -1 ? bear_conf_pct : 0.0
 string sys_waiting = ltf_trend == 1 ? (bull_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bull_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : ltf_trend == -1 ? (bear_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bear_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : "Trail Direction"
 string sys_flip_req = ltf_trend == 1 ? "Trail flip -> bearish" : ltf_trend == -1 ? "Trail flip -> bullish" : "Any trail confirmation"
@@ -1151,7 +1231,7 @@ float bull_mtf_pts = mtf_bull_conf ? mtf_weight : mtf_partial_bull ? mtf_weight 
 float bear_mtf_pts = mtf_bear_conf ? mtf_weight : mtf_partial_bear ? mtf_weight * 0.4 : 0.0
 
 if dashOn and (na(dashTable) or panelPlacement != prevPlace)
-    dashTable := table.new(pos_enum, 4, 30, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
+    dashTable := table.new(pos_enum, 4, 40, border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 70))
     prevPlace := panelPlacement
 
 if dashOn and not na(dashTable)
@@ -1290,8 +1370,55 @@ if dashOn and not na(dashTable)
     color  conf_color = final_call_entry ? txt_bull : final_put_entry ? txt_bear : gate_warn
     table.cell(dashTable, 1, 29, conf_label, text_color=conf_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
+    table.merge_cells(dashTable, 0, 30, 3, 30)
+    table.cell(dashTable, 0, 30, " REGIME INTELLIGENCE ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 31, " STRENGTH ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 31, 2, 31)
+    color rstr_color = regime_strength > 30 ? gate_pass : regime_strength < -30 ? gate_fail : gate_warn
+    table.cell(dashTable, 1, 31, str.tostring(math.round(math.abs(regime_strength))) + "% (" + str.tostring(regime_bar_count) + " bars)", text_color=rstr_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 31, regime_quality, text_color=regime_quality == "SOVEREIGN" ? gate_pass : regime_quality == "ALIGNED" ? gate_pass : regime_quality == "MIXED" ? gate_warn : gate_fail, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 32, " IV PROXY ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 32, str.tostring(math.round(iv_proxy * 100)) + "% ann.", text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 32, "RR", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 32, "1:" + str.tostring(rr_ratio, "#.#"), text_color=rr_ratio >= 1.5 ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 33, " DELTA ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 33, "C: " + str.tostring(call_delta, "#.##"), text_color=txt_bull, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 33, "P: " + str.tostring(put_delta, "#.##"), text_color=txt_bear, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 33, call_delta >= 0.4 and call_delta <= 0.6 ? "ATM" : call_delta < 0.4 ? "OTM" : "ITM", text_color=txt_neut, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.merge_cells(dashTable, 0, 34, 3, 34)
+    table.cell(dashTable, 0, 34, " SIGNAL P&L (last entry vs now) ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 35, " PNL ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 35, 3, 35)
+    color pnl_color = na(pnl_pts) ? txt_neut : pnl_pts >= 0 ? gate_pass : gate_fail
+    table.cell(dashTable, 1, 35, pnl_label + (na(last_entry_bias) ? "" : "  [" + last_entry_bias + "]"), text_color=pnl_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.merge_cells(dashTable, 0, 36, 3, 36)
+    table.cell(dashTable, 0, 36, " LIQUIDITY ZONES (Sniper Engine) ", text_color=color.new(color.yellow, 10), text_size=size.small, bgcolor=color.new(#2a2e39, 30), text_halign=text.align_left)
+
+    table.cell(dashTable, 0, 37, " SNIPER ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 37, 3, 37)
+    string sniper_txt = liq_call_entry ? "SNIPER CALL  — Zone retest confirmed" : liq_put_entry ? "SNIPER PUT   — Zone retest confirmed" : show_zones ? "Watching for zone retest..." : "Enable Liquidity Zones to activate"
+    color  sniper_col = liq_call_entry ? txt_bull : liq_put_entry ? txt_bear : txt_neut
+    table.cell(dashTable, 1, 37, sniper_txt, text_color=sniper_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 38, " BREAK ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 38, 3, 38)
+    string break_txt = liq_call_break ? "BULL BREAK  — Resistance taken, momentum" : liq_put_break ? "BEAR BREAK  — Support lost, momentum" : show_zones ? "No zone break this bar" : "—"
+    color  break_col = liq_call_break ? txt_bull : liq_put_break ? txt_bear : txt_neut
+    table.cell(dashTable, 1, 38, break_txt, text_color=break_col, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
+    table.cell(dashTable, 0, 39, " ZONES ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.merge_cells(dashTable, 1, 39, 3, 39)
+    string zones_txt = show_zones ? (str.tostring(zones.size()) + " active zones  •  Bull: " + (bull_break_signal ? "BRK" : bull_retest_signal ? "RET" : "—") + "  Bear: " + (bear_break_signal ? "BRK" : bear_retest_signal ? "RET" : "—")) : "OFF — Enable in section 2"
+    table.cell(dashTable, 1, 39, zones_txt, text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+
 else if not dashOn and not na(dashTable)
-    table.clear(dashTable, 0, 0, 3, 29)
+    table.clear(dashTable, 0, 0, 3, 39)
     dashTable := na
     prevPlace := ""
 
@@ -1332,14 +1459,17 @@ tronAlert(string sigType, string bias, float confPct) =>
     string line10   = "Structure:  " + (bullBOS ? "Bullish BOS" : bearBOS ? "Bearish BOS" : "Neutral") + "\n"
     string line11   = "VWAP:       " + (vwapBullish ? "Bullish" : vwapBearish ? "Bearish" : "Neutral") + "\n"
     string line12   = "Fib:        " + (fibBullish ? "Bullish" : fibBearish ? "Bearish" : "Neutral") + "\n\n"
+    string delta_str  = bias == "CALL" ? str.tostring(call_delta, "#.##") : str.tostring(put_delta, "#.##")
+    string rstr_str   = str.tostring(math.round(math.abs(regime_strength))) + "% | " + regime_quality + " | " + str.tostring(regime_bar_count) + " bars"
     string line13   = "BIAS: " + bias + " -- " + str.tostring(math.round(confPct)) + "% conf | MTF: " + mtf_str + " | " + qual_str + "\n\n"
     string line14   = "VANILLA OPTIONS SETUP\n"
     string line15   = "Strike: " + strike + " (" + strike_mode + ")  Expiry: " + str.tostring(rec_expiry) + "m\n"
     string line16   = "Entry:  " + str.tostring(close, "#.##") + "\n"
-    string line17   = "SL:     " + sl_str + "\n"
+    string line17   = "SL:     " + sl_str + "  RR: 1:" + str.tostring(rr_ratio, "#.#") + "\n"
     string line18   = "TP1/2/3: " + tp1_str + " / " + tp2_str + " / " + tp3_str + "\n\n"
-    string line19   = "Gate: " + str.tostring(conf_threshold) + "%  ATR: " + str.tostring(current_atr, "#.####")
-    line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19
+    string line19   = "REGIME: " + rstr_str + "\n"
+    string line20   = "IV: " + str.tostring(math.round(iv_proxy * 100)) + "%  Delta: " + delta_str + "  ATR: " + str.tostring(current_atr, "#.####")
+    line1 + line2 + line3 + line4 + line5 + line6 + line7 + line8 + line9 + line10 + line11 + line12 + line13 + line14 + line15 + line16 + line17 + line18 + line19 + line20
 
 if final_call_entry
     alert(tronAlert("⚡ CALL ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
@@ -1362,6 +1492,18 @@ if bullBOS
 if bearBOS
     alert(tronAlert("🏗 BEARISH BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
 
+// Liquidity Zone alerts — Sniper entries and Break momentum
+// Sniper = zone retest (highest conviction — price returning to broken level)
+// Break  = structural break with trail alignment (momentum confirmation)
+if liq_call_entry
+    alert(tronAlert("⚡ SNIPER CALL — Zone Retest", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if liq_put_entry
+    alert(tronAlert("⚡ SNIPER PUT — Zone Retest",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
+if liq_call_break
+    alert(tronAlert("⚡ CALL BREAK — Zone Momentum", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if liq_put_break
+    alert(tronAlert("⚡ PUT BREAK — Zone Momentum",  "PUT",  bear_conf_pct), alert.freq_once_per_bar_close)
+
 // Static alertcondition() entries kept for TradingView's Alert dialog dropdown
 alertcondition(final_call_entry,    title="Vanilla Call Entry",      message="TRON GLASSBOX: CALL ENTRY")
 alertcondition(final_put_entry,     title="Vanilla Put Entry",       message="TRON GLASSBOX: PUT ENTRY")
@@ -1373,3 +1515,7 @@ alertcondition(bull_conf_pass and not bull_conf_pass[1], title="Call Confidence 
 alertcondition(bear_conf_pass and not bear_conf_pass[1], title="Put Confidence Pass",  message="TRON GLASSBOX: PUT CONFIDENCE THRESHOLD MET")
 alertcondition(bullBOS,             title="Bullish BOS",             message="TRON GLASSBOX: BULLISH BREAK OF STRUCTURE")
 alertcondition(bearBOS,             title="Bearish BOS",             message="TRON GLASSBOX: BEARISH BREAK OF STRUCTURE")
+alertcondition(liq_call_entry,      title="Sniper Call Entry",       message="TRON GLASSBOX: SNIPER CALL — Zone Retest")
+alertcondition(liq_put_entry,       title="Sniper Put Entry",        message="TRON GLASSBOX: SNIPER PUT — Zone Retest")
+alertcondition(liq_call_break,      title="Call Zone Break",         message="TRON GLASSBOX: CALL BREAK — Zone Momentum")
+alertcondition(liq_put_break,       title="Put Zone Break",          message="TRON GLASSBOX: PUT BREAK — Zone Momentum")
