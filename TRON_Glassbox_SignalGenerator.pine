@@ -1055,17 +1055,20 @@ float put_tp1  = close - current_atr * rr_tp_mult
 float put_tp2  = close - current_atr * rr_tp_mult * 2.0
 float put_tp3  = close - current_atr * rr_tp_mult * 3.5
 
-// PnL tracker — must live after final_call/put_entry are declared
+// PnL tracker — tracks ALL entry types (flip snipers included)
 var float last_entry_price = na
 var string last_entry_bias = ""
-if final_call_entry
+var string last_entry_type = ""
+if sovereign_flip_call or mtf_flip_call or trail_flip_call or liq_call_entry or final_call_entry
     last_entry_price := close
     last_entry_bias  := "CALL"
-if final_put_entry
+    last_entry_type  := sovereign_flip_call ? "H4-FLIP" : mtf_flip_call ? "MTF-FLIP" : trail_flip_call ? "FLIP" : liq_call_entry ? "SNIPER" : "ENTRY"
+if sovereign_flip_put or mtf_flip_put or trail_flip_put or liq_put_entry or final_put_entry
     last_entry_price := close
     last_entry_bias  := "PUT"
+    last_entry_type  := sovereign_flip_put ? "H4-FLIP" : mtf_flip_put ? "MTF-FLIP" : trail_flip_put ? "FLIP" : liq_put_entry ? "SNIPER" : "ENTRY"
 float pnl_pts = na(last_entry_price) ? na : last_entry_bias == "CALL" ? close - last_entry_price : last_entry_price - close
-string pnl_label = na(pnl_pts) ? "—" : (pnl_pts >= 0 ? "+" : "") + str.tostring(pnl_pts, "#.##") + " pts (" + (pnl_pts >= 0 ? "WIN" : "LOSS") + ")"
+string pnl_label = na(pnl_pts) ? "—" : (pnl_pts >= 0 ? "+" : "") + str.tostring(pnl_pts, "#.##") + " pts (" + (pnl_pts >= 0 ? "WIN" : "LOSS") + ")  [" + last_entry_type + "]"
 
 // =========================================================================
 // STEP 14: VISUAL OUTPUTS (VANILLA-SPECIFIC)
@@ -1127,11 +1130,11 @@ if mtf_flip_call and not sovereign_flip_call
 if mtf_flip_put and not sovereign_flip_put
     label.new(bar_index, high, "MTF FLIP PUT\nExpiry: " + str.tostring(rec_expiry) + "m",  color=color.new(color.purple, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
 
-// Chart trail flip with MTF confirmation (fuchsia, smaller)
+// Chart trail flip with MTF confirmation (fuchsia)
 if trail_flip_call and not sovereign_flip_call and not mtf_flip_call
-    label.new(bar_index, low,  "FLIP CALL", color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
+    label.new(bar_index, low,  "FLIP CALL\nStrike: " + str.tostring(call_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m", color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_up, size=size.small)
 if trail_flip_put and not sovereign_flip_put and not mtf_flip_put
-    label.new(bar_index, high, "FLIP PUT",  color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
+    label.new(bar_index, high, "FLIP PUT\nStrike: " + str.tostring(put_strike, "#.##") + "\nExpiry: " + str.tostring(rec_expiry) + "m",  color=color.new(color.fuchsia, 10), textcolor=color.white, style=label.style_label_down, size=size.small)
 
 // SL / TP lines — drawn on any confirmed entry, extend 80 bars forward
 // Persistent: deleted and redrawn when next entry fires
@@ -1294,7 +1297,7 @@ string sys_bias    = ltf_trend == 1 ? "BULLISH" : ltf_trend == -1 ? "BEARISH" : 
 string sys_action  = sovereign_flip_call ? "H4 FLIP CALL" : sovereign_flip_put ? "H4 FLIP PUT" : mtf_flip_call ? "MTF FLIP CALL" : mtf_flip_put ? "MTF FLIP PUT" : trail_flip_call ? "FLIP CALL" : trail_flip_put ? "FLIP PUT" : liq_call_entry ? "SNIPER CALL" : liq_put_entry ? "SNIPER PUT" : final_call_entry ? "CALL SIGNAL" : final_put_entry ? "PUT SIGNAL" : liq_call_break ? "BREAK CALL" : liq_put_break ? "BREAK PUT" : continuation_call ? "CALL CONT." : continuation_put ? "PUT CONT." : "DETECTING"
 float  sys_conf    = ltf_trend == 1 ? bull_conf_pct : ltf_trend == -1 ? bear_conf_pct : 0.0
 string sys_waiting = ltf_trend == 1 ? (bull_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bull_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : ltf_trend == -1 ? (bear_conf_pass ? "ATM Trigger" : "Conf " + str.tostring(math.round(bear_conf_pct)) + "%->" + str.tostring(conf_threshold) + "%") : "Trail Direction"
-string sys_flip_req = ltf_trend == 1 ? "Trail flip -> bearish" : ltf_trend == -1 ? "Trail flip -> bullish" : "Any trail confirmation"
+string sys_flip_req = h4_trend == 1 ? "H4=BULL — trade CALL flips only" : h4_trend == -1 ? "H4=BEAR — trade PUT flips only" : "Wait for H4 direction"
 
 float bull_mtf_pts = mtf_bull_conf ? mtf_weight : mtf_partial_bull ? mtf_weight * 0.4 : 0.0
 float bear_mtf_pts = mtf_bear_conf ? mtf_weight : mtf_partial_bear ? mtf_weight * 0.4 : 0.0
@@ -1318,27 +1321,39 @@ if dashOn and not na(dashTable)
     table.merge_cells(dashTable, 1, 3, 3, 3)
     table.cell(dashTable, 1, 3, sys_waiting, text_color=gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
-    table.cell(dashTable, 0, 4, " FLIP IF ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
-    table.merge_cells(dashTable, 1, 4, 3, 4)
-    table.cell(dashTable, 1, 4, sys_flip_req, text_color=txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    // FLIP TRUTH ROW — the priority authority for every flip signal
+    // H4 = The Law. H1 = The Truth. M15 = The Timing. Chart = The Trigger.
+    string flip_truth_dir   = h4_trend == 1 ? "BULL" : "BEAR"
+    int    flip_layers_bull = (h4_trend == 1 ? 1 : 0) + (h1_trend == 1 ? 1 : 0) + (m15_trend == 1 ? 1 : 0) + (ltf_trend == 1 ? 1 : 0)
+    int    flip_layers_bear = (h4_trend == -1 ? 1 : 0) + (h1_trend == -1 ? 1 : 0) + (m15_trend == -1 ? 1 : 0) + (ltf_trend == -1 ? 1 : 0)
+    int    flip_layers      = ltf_trend == 1 ? flip_layers_bull : flip_layers_bear
+    string flip_active      = flip_h4_bull or flip_h4_bear ? "H4 FLIPPED" : flip_h1_bull or flip_h1_bear ? "H1 FLIPPED" : flip_m15_bull or flip_m15_bear ? "M15 FLIPPED" : flip_bull or flip_bear ? "CHART FLIP" : "Holding"
+    color  flip_truth_col   = h4_trend == ltf_trend ? (flip_layers >= 3 ? gate_pass : gate_warn) : gate_fail
 
+    table.cell(dashTable, 0, 4, " FLIP TRUTH ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 4, "H4=" + flip_truth_dir, text_color=h4_trend == 1 ? txt_bull : txt_bear, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 4, str.tostring(flip_layers) + "/4 aligned", text_color=flip_truth_col, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 4, flip_active, text_color=flip_active == "Holding" ? txt_neut : gate_warn, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+
+    // FRACTAL section — H4 / H1 / M15 / Chart with live flip indicators
     table.merge_cells(dashTable, 0, 5, 3, 5)
-    table.cell(dashTable, 0, 5, " FRACTAL - H1->M15->Now ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
+    string h4_flip_badge = flip_h4_bull ? " << FLIP BULL" : flip_h4_bear ? " << FLIP BEAR" : ""
+    table.cell(dashTable, 0, 5, " FRACTAL  L1 H4: " + trendLabel(h4_trend) + h4_flip_badge + " ", text_color=h4_trend == 1 ? txt_bull : h4_trend == -1 ? txt_bear : txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
 
-    table.cell(dashTable, 0, 6, " H1 INTRADAY ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 0, 6, " H1 ANCHOR ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
     table.cell(dashTable, 1, 6, h1_trend == 1 ? "BULL" : h1_trend == -1 ? "BEAR" : "NEUT", text_color=h1_trend == 1 ? txt_bull : h1_trend == -1 ? txt_bear : txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 2, 6, "TRUTH", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 3, 6, h1_trend == ltf_trend ? "OK" : "WARN", text_color=h1_trend == ltf_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 6, flip_h1_bull or flip_h1_bear ? "FLIP!" : "L2", text_color=flip_h1_bull or flip_h1_bear ? gate_warn : color.new(color.gray, 50), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 6, h1_trend == h4_trend ? "OK" : "WARN", text_color=h1_trend == h4_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
-    table.cell(dashTable, 0, 7, " M15 TACTICAL ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 0, 7, " M15 FILTER ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
     table.cell(dashTable, 1, 7, m15_trend == 1 ? "BULL" : m15_trend == -1 ? "BEAR" : "NEUT", text_color=m15_trend == 1 ? txt_bull : m15_trend == -1 ? txt_bear : txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 2, 7, mtf_bullish or mtf_bearish ? "ALIGNED" : "PARTIAL", text_color=mtf_bullish or mtf_bearish ? gate_pass : gate_warn, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 3, 7, m15_trend == ltf_trend ? "OK" : "WARN", text_color=m15_trend == ltf_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 7, flip_m15_bull or flip_m15_bear ? "FLIP!" : (mtf_bullish or mtf_bearish ? "L3-OK" : "L3"), text_color=flip_m15_bull or flip_m15_bear ? gate_warn : (mtf_bullish or mtf_bearish ? gate_pass : color.new(color.gray, 50)), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 7, m15_trend == h4_trend ? "OK" : "WARN", text_color=m15_trend == h4_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
-    table.cell(dashTable, 0, 8, " NOW STRUCT ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
-    table.cell(dashTable, 1, 8, structLabel, text_color=structBias == 1 ? txt_bull : structBias == -1 ? txt_bear : txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 2, 8, bullBOS ? "BOS+" : bearBOS ? "BOS-" : "—", text_color=bullBOS ? txt_bull : bearBOS ? txt_bear : txt_neut, text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
-    table.cell(dashTable, 3, 8, structBias == ltf_trend ? "OK" : "WARN", text_color=structBias == ltf_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 0, 8, " CHART EXEC ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
+    table.cell(dashTable, 1, 8, ltf_trend == 1 ? "BULL" : ltf_trend == -1 ? "BEAR" : "NEUT", text_color=ltf_trend == 1 ? txt_bull : ltf_trend == -1 ? txt_bear : txt_neut, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 2, 8, flip_bull or flip_bear ? "FLIP!" : (bullBOS ? "BOS+" : bearBOS ? "BOS-" : "L4"), text_color=flip_bull or flip_bear ? gate_warn : (bullBOS ? txt_bull : bearBOS ? txt_bear : color.new(color.gray, 50)), text_size=size.tiny, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 3, 8, ltf_trend == h4_trend ? "OK" : "WARN", text_color=ltf_trend == h4_trend ? gate_pass : gate_warn, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
     table.merge_cells(dashTable, 0, 9, 3, 9)
     table.cell(dashTable, 0, 9, " CALL -> " + str.tostring(math.round(bull_conf_pct)) + "% (need " + str.tostring(conf_threshold) + "%) ", text_color=txt_bull, text_size=size.small, bgcolor=color.new(bull_color, 85), text_halign=text.align_left)
@@ -1464,7 +1479,7 @@ if dashOn and not na(dashTable)
     table.cell(dashTable, 0, 35, " PNL ", text_color=txt_label, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_left)
     table.merge_cells(dashTable, 1, 35, 3, 35)
     color pnl_color = na(pnl_pts) ? txt_neut : pnl_pts >= 0 ? gate_pass : gate_fail
-    table.cell(dashTable, 1, 35, pnl_label + (na(last_entry_bias) ? "" : "  [" + last_entry_bias + "]"), text_color=pnl_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
+    table.cell(dashTable, 1, 35, pnl_label, text_color=pnl_color, text_size=size.small, bgcolor=bg_panel, text_halign=text.align_center)
 
     table.merge_cells(dashTable, 0, 36, 3, 36)
     table.cell(dashTable, 0, 36, " ACTIVE SL / TP LEVELS ", text_color=txt_title, text_size=size.small, bgcolor=bg_section, text_halign=text.align_left)
