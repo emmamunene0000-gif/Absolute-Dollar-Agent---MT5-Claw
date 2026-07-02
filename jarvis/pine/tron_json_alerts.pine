@@ -1,0 +1,105 @@
+// =========================================================================
+// TRON GLASSBOX — JSON WEBHOOK EMITTER (replaces tronAlert prose)
+// Drop-in: paste below STEP 12b, replace the alert() calls in STEP 17.
+// TradingView alert Message field: {{alert_message}}
+// Webhook URL: https://YOUR_JARVIS_HOST/webhook/tron?key=YOUR_WEBHOOK_SECRET
+//
+// PHILOSOPHY UNCHANGED: Pine detects, emits full architecture-state
+// context, tracks nothing. Jarvis parses, decides, speaks, executes.
+// =========================================================================
+
+// json-safe string helper (escapes quotes — tickers/TFs are safe but be strict)
+jstr(string s) =>
+    str.replace_all(s, "\"", "'")
+
+tronJSON(string sigType, string bias, float confPct) =>
+    float  strike   = bias == "CALL" ? call_strike : put_strike
+    float  sl_v     = bias == "CALL" ? call_sl  : put_sl
+    float  tp1_v    = bias == "CALL" ? call_tp1 : put_tp1
+    float  tp2_v    = bias == "CALL" ? call_tp2 : put_tp2
+    float  tp3_v    = bias == "CALL" ? call_tp3 : put_tp3
+    float  delta_v  = bias == "CALL" ? call_delta : put_delta
+    string mode_key = trade_mode == "Vanilla Options" ? "vanilla" : trade_mode == "Rise/Fall" ? "rise_fall" : "multiplier"
+    "{" +
+      "\"engine\":\"TRON_GBX_v3\"," +
+      "\"schema\":1," +
+      "\"signal\":\""   + jstr(sigType) + "\"," +
+      "\"bias\":\""     + bias + "\"," +
+      "\"mode\":\""     + mode_key + "\"," +
+      "\"symbol\":\""   + jstr(syminfo.ticker) + "\"," +
+      "\"tf\":\""       + jstr(timeframe.period) + "\"," +
+      "\"time\":"       + str.tostring(timenow) + "," +
+      "\"spot\":"       + str.tostring(close, "#.#####") + "," +
+      "\"confidence\":" + str.tostring(math.round(confPct)) + "," +
+      "\"conf_bull\":"  + str.tostring(math.round(bull_conf_pct)) + "," +
+      "\"conf_bear\":"  + str.tostring(math.round(bear_conf_pct)) + "," +
+      "\"fractal\":{" +
+        "\"h4\":\""  + trendLabel(h4_trend)  + "\"," +
+        "\"h1\":\""  + trendLabel(h1_trend)  + "\"," +
+        "\"m15\":\"" + trendLabel(m15_trend) + "\"," +
+        "\"m5\":\""  + trendLabel(m5_trend)  + "\"," +
+        "\"sync_layers\":" + str.tostring(sync_layers) + "," +
+        "\"quality\":\""   + regime_quality + "\"" +
+      "}," +
+      "\"core\":{" +
+        "\"structure\":\"" + (bullBOS ? "BULL_BOS" : bearBOS ? "BEAR_BOS" : structLabel) + "\"," +
+        "\"vwap\":\""      + (vwapBullish ? "BULL" : vwapBearish ? "BEAR" : "NEUT") + "\"," +
+        "\"fib\":\""       + (fibBullish ? "BULL" : fibBearish ? "BEAR" : "NEUT") + "\"," +
+        "\"vp\":\""        + jstr(vp_strength) + "\"," +
+        "\"rsi\":"         + str.tostring(rsi, "#.#") + "," +
+        "\"spatial\":\""   + (spatial_quality ? "KEY_LEVEL" : "OPEN_SPACE") + "\"" +
+      "}," +
+      "\"setup\":{" +
+        "\"strike\":"      + str.tostring(strike, "#.#####") + "," +
+        "\"strike_mode\":\"" + strike_mode + "\"," +
+        "\"expiry_min\":"  + str.tostring(rec_expiry) + "," +
+        "\"sl\":"          + str.tostring(sl_v,  "#.#####") + "," +
+        "\"tp1\":"         + str.tostring(tp1_v, "#.#####") + "," +
+        "\"tp2\":"         + str.tostring(tp2_v, "#.#####") + "," +
+        "\"tp3\":"         + str.tostring(tp3_v, "#.#####") + "," +
+        "\"rr\":"          + str.tostring(rr_ratio, "#.##") + "," +
+        "\"atr\":"         + str.tostring(current_atr, "#.#####") + "," +
+        "\"iv_proxy\":"    + str.tostring(iv_proxy, "#.###") + "," +
+        "\"delta\":"       + str.tostring(delta_v, "#.##") + "," +
+        "\"regime_strength\":" + str.tostring(math.round(math.abs(regime_strength))) + "," +
+        "\"regime_bars\":" + str.tostring(regime_bar_count) +
+      "}" +
+    "}"
+
+// --- STEP 17 replacement: same triggers, JSON payloads ---
+if final_call_entry
+    alert(tronJSON("CALL_ENTRY", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if final_put_entry
+    alert(tronJSON("PUT_ENTRY", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if liq_call_entry
+    alert(tronJSON("SNIPER_CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if liq_put_entry
+    alert(tronJSON("SNIPER_PUT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if sovereign_flip_call
+    alert(tronJSON("H4_FLIP_CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if sovereign_flip_put
+    alert(tronJSON("H4_FLIP_PUT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if mtf_flip_call and not sovereign_flip_call
+    alert(tronJSON("MTF_FLIP_CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if mtf_flip_put and not sovereign_flip_put
+    alert(tronJSON("MTF_FLIP_PUT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if trail_flip_call and not sovereign_flip_call and not mtf_flip_call
+    alert(tronJSON("TRAIL_FLIP_CALL", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if trail_flip_put and not sovereign_flip_put and not mtf_flip_put
+    alert(tronJSON("TRAIL_FLIP_PUT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if continuation_call
+    alert(tronJSON("CALL_CONTINUATION", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if continuation_put
+    alert(tronJSON("PUT_CONTINUATION", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if liq_call_break
+    alert(tronJSON("CALL_ZONE_BREAK", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if liq_put_break
+    alert(tronJSON("PUT_ZONE_BREAK", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if bullish_regime_shift
+    alert(tronJSON("BULL_REGIME_SHIFT", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if bearish_regime_shift
+    alert(tronJSON("BEAR_REGIME_SHIFT", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
+if bullBOS
+    alert(tronJSON("BULL_BOS", "CALL", bull_conf_pct), alert.freq_once_per_bar_close)
+if bearBOS
+    alert(tronJSON("BEAR_BOS", "PUT", bear_conf_pct), alert.freq_once_per_bar_close)
