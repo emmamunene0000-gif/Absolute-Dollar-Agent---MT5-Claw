@@ -1,0 +1,14 @@
+entrypoint = "jarvis/app/main.py"
+modules = ["python-3.11"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+deploymentTarget = "vm"
+build = ["sh", "-c", "cd jarvis && pip install -r requirements.txt"]
+run = ["sh", "-c", "cd jarvis && uvicorn app.main:app --host 0.0.0.0 --port 8080"]
+
+[[ports]]
+localPort = 8080
+externalPort = 80

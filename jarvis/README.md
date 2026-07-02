@@ -8,18 +8,24 @@ TradingView (TRON, Premium) → JSON webhook → JARVIS (FastAPI) → SQLite Led
 
 Tier routing: EXECUTE signals get an operator card with ⚡ buttons and a broadcast copy without buttons for the channel. CONTEXT signals get an informational card. NOISE goes to the ledger only — Jarvis holds the trash.
 
-## Setup
+## Setup — Replit (current deployment target)
 
-1. **Server.** Any small VPS with a public IP. Python 3.11+.
-2. `pip install -r requirements.txt`
-3. `cp .env.example .env` and fill it in:
-   - **Telegram bot**: create via @BotFather, paste token. Run Jarvis once, send `/start` to your bot — it replies with your operator id. Put that in `TELEGRAM_OPERATOR_ID`. Only that id can tap trades.
-   - **Deriv tokens**: Deriv → Settings → API Token. Create one on the demo account and one on real, both with `trade` + `read` scopes. `DERIV_ENV=demo` until the demo ledger proves the pipeline.
-   - **Deriv app id**: register your own at api.deriv.com — this is also where your affiliate/IB markup attaches later.
-   - **WEBHOOK_SECRET**: long random string.
-4. Run: `uvicorn app.main:app --host 0.0.0.0 --port 8080`
-   (Production: put it behind Caddy/nginx for HTTPS — TradingView requires port 80/443 for webhooks.)
-5. **TradingView side**: `TRON_Glassbox_SignalGenerator.pine` (repo root) already emits JSON — STEP 17 was merged. Load it on the chart, create ONE alert with condition "Any alert() function call", Message = `{{alert_message}}`, Webhook URL = `https://your-host/webhook/tron?key=YOUR_SECRET`.
+The repo root has a `.replit` config already pointed at `jarvis/`. Jarvis holds a Telegram polling loop and background "watch this contract" tasks that must stay alive between webhooks, so this must be a **Reserved VM** deployment, not Autoscale — Autoscale spins to zero between requests and would kill both the polling loop and the in-memory `_pending` tap-to-trade queue.
+
+1. **Import**: Replit → Create App → Import from GitHub → this repo.
+2. **Secrets** (Replit's lock icon in the sidebar, not `.env` — Replit injects these as real env vars): set every key listed in `jarvis/.env.example` — `WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OPERATOR_ID`, `TELEGRAM_BROADCAST_ID`, `DERIV_APP_ID`, `DERIV_TOKEN_DEMO`, `DERIV_TOKEN_REAL`, `DERIV_ENV=demo`, `AUTO_TRADE=false`.
+   - Telegram bot: create via @BotFather, paste the token, run once, send `/start` — it replies with your operator id, put that in `TELEGRAM_OPERATOR_ID`.
+   - Deriv tokens: Deriv → Settings → API Token, one on demo and one on real, both `trade` + `read` scopes.
+   - Deriv app id: register your own at api.deriv.com.
+3. **Deploy**: the Deploy tab → type **Reserved VM** → it reads the `[deployment]` block in `.replit` (`pip install -r jarvis/requirements.txt` then `uvicorn app.main:app --host 0.0.0.0 --port 8080`) → Deploy. You get a stable `https://<name>.replit.app` URL — that's your webhook host, TLS already handled.
+4. **TradingView side**: `TRON_Glassbox_SignalGenerator.pine` (repo root) already emits JSON — STEP 17 was merged. Load it on the chart, create ONE alert with condition "Any alert() function call", Message = `{{alert_message}}`, Webhook URL = `https://<name>.replit.app/webhook/tron?key=YOUR_WEBHOOK_SECRET`.
+
+## Setup — any other VPS
+
+1. `pip install -r requirements.txt`
+2. `cp .env.example .env` and fill it in (same fields as the Replit Secrets above).
+3. Run: `uvicorn app.main:app --host 0.0.0.0 --port 8080`, behind Caddy/nginx for HTTPS — TradingView requires port 80/443 for webhooks.
+4. Same TradingView alert setup as above, pointed at your own host.
 
 ## Commands
 
