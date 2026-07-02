@@ -446,12 +446,9 @@ TRON_JARVIS/
 ├── README.md                          ← you are here — full vision + masterclass
 │
 ├── Pine Script (TRON)
-│   ├── TRON_Glassbox_SignalGenerator.pine  ← ACTIVE v4.0
-│   └── TRON_GroundTruth_Locked.pine        ← frozen baseline (never edit)
+│   └── TRON_Glassbox_SignalGenerator.pine  ← ACTIVE v4.0 — the only Pine Script in this repo
 │
 ├── Legacy / Reference
-│   ├── TronAgent_Spine.pine
-│   ├── VanillaAgent_DerivOptions.pine
 │   ├── AgentProtocol_LiquiditySuite.mq5
 │   ├── Agent - Liquidity Suite.txt
 │   ├── Agent V7 Strategy - Tradesgnl.txt
